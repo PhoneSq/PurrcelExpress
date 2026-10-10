@@ -1,9 +1,10 @@
 #include <math.h>
 #include "Renderer.h"
+#include "World.h"
+#include "Player.h"
 #include "Config.h"
-#include "Map.h"
 
-void Renderer::DrawWorld(DWORD* pixels, const Player& p)
+void Renderer::DrawWorld(DWORD* pixels, const Map& map, const Player& p)
 {
     const DWORD CEILING = 0x101014;
     const DWORD FLOOR = 0x1C1C1C;
@@ -19,19 +20,19 @@ void Renderer::DrawWorld(DWORD* pixels, const Player& p)
     {
         // ray direction for this column
         float camX = 2.0f * x / SCREEN_W - 1.0f;
-        float rayX = p.dirX + p.planeX * camX;
-        float rayY = p.dirY + p.planeY * camX;
+        float rayX = p.DirX() + p.PlaneX() * camX;
+        float rayY = p.DirY() + p.PlaneY() * camX;
 
-        int mapX = (int)p.x, mapY = (int)p.y;
+        int mapX = (int)p.X(), mapY = (int)p.Y();
         float deltaX = (rayX == 0) ? 1e30f : fabsf(1.0f / rayX);
         float deltaY = (rayY == 0) ? 1e30f : fabsf(1.0f / rayY);
 
         int stepX, stepY;
         float sideX, sideY;
-        if (rayX < 0) { stepX = -1; sideX = (p.x - mapX) * deltaX; }
-        else { stepX = 1; sideX = (mapX + 1.0f - p.x) * deltaX; }
-        if (rayY < 0) { stepY = -1; sideY = (p.y - mapY) * deltaY; }
-        else { stepY = 1; sideY = (mapY + 1.0f - p.y) * deltaY; }
+        if (rayX < 0) { stepX = -1; sideX = (p.X() - mapX) * deltaX; }
+        else { stepX = 1; sideX = (mapX + 1.0f - p.X()) * deltaX; }
+        if (rayY < 0) { stepY = -1; sideY = (p.Y() - mapY) * deltaY; }
+        else { stepY = 1; sideY = (mapY + 1.0f - p.Y()) * deltaY; }
 
         // DDA: step through grid cells until we hit a wall
         int side = 0;
@@ -39,7 +40,7 @@ void Renderer::DrawWorld(DWORD* pixels, const Player& p)
         {
             if (sideX < sideY) { sideX += deltaX; mapX += stepX; side = 0; }
             else { sideY += deltaY; mapY += stepY; side = 1; }
-            if (IsWall(mapX, mapY)) break;
+            if (map.IsWall(mapX, mapY)) break;
         }
 
         float dist = (side == 0) ? sideX - deltaX : sideY - deltaY;
