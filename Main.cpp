@@ -1,192 +1,222 @@
 #define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
 #include <windows.h>
-#include <math.h>   // sinf/cosf/fabsf (Win32 has no math functions)
+#include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
+#include "Config.h"
+#include "Player.h"
+#include "Renderer.h"
+#include "Menu.h"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
-#pragma comment(linker, "/SUBSYSTEM:WINDOWS")   // use WinMain, not main()
+#pragma comment(linker, "/SUBSYSTEM:WINDOWS")
 #endif
 
-// ---------------- settings ----------------
-const int   SCREEN_W = 640;
-const int   SCREEN_H = 400;
-const int   SCALE = 2;
-const float MOVE_SPEED = 3.0f;   // tiles per second
-const float TURN_SPEED = 2.5f;   // radians per second
-
-// ---------------- map ----------------
-// '#' = wall, '.' = empty
-const int MAP_W = 16;
-const int MAP_H = 16;
-const char* MAP[MAP_H] =
+enum GameState
 {
-    "################",
-    "#..............#",
-    "#..##......##..#",
-    "#..#........#..#",
-    "#..............#",
-    "#.....####.....#",
-    "#.....#..#.....#",
-    "#.....#..#.....#",
-    "#..............#",
-    "#..#........#..#",
-    "#..##......##..#",
-    "#..............#",
-    "#......##......#",
-    "#..............#",
-    "#..............#",
-    "################",
-};
-
-bool IsWall(int x, int y)
-{
-    if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return true;
-    return MAP[y][x] == '#';
-}
-
-// ---------------- player ----------------
-struct Player
-{
-    float x = 1.5f, y = 1.5f;      // position
-    float dirX = 1.0f, dirY = 0.0f; // facing direction
-    float planeX = 0.0f, planeY = 0.66f; // camera plane (FOV)
-
-    void Rotate(float a)
-    {
-        float c = cosf(a), s = sinf(a);
-        float old = dirX;
-        dirX = dirX * c - dirY * s;
-        dirY = old * s + dirY * c;
-        old = planeX;
-        planeX = planeX * c - planeY * s;
-        planeY = old * s + planeY * c;
-    }
-
-    void Move(float dx, float dy)
-    {
-        // check X and Y separately so you slide along walls
-        if (!IsWall((int)(x + dx), (int)y)) x += dx;
-        if (!IsWall((int)x, (int)(y + dy))) y += dy;
-    }
+    STATE_MENU,
+    STATE_PLAYING
 };
 
 // ---------------- globals ----------------
-DWORD g_pixels[SCREEN_W * SCREEN_H];
-bool g_keys[256] = {};
-bool g_running = true;
+static GameState g_state = STATE_MENU;
+static bool      g_running = true;
+static bool      g_keys[256] = {};
+static bool      g_mouseLocked = false;
 
-// ---------------- rendering ----------------
-void Render(const Player& p)
+static HDC    g_backDC = nullptr;   // memory DC we draw into
+static DWORD* g_pixels = nullptr;   // points at the DIB section's pixels
+
+static Player* g_player = nullptr;
+static Menu* g_menu = nullptr;
+static Renderer* g_renderer = nullptr;
+
+// ---------------- mouse lock ----------------
+static POINT ClientCenter(HWND hwnd)
 {
-    const DWORD CEILING = 0x101014;
-    const DWORD FLOOR = 0x1C1C1C;
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    POINT p = { rc.right / 2, rc.bottom / 2 };
+    ClientToScreen(hwnd, &p);
+    return p;
+}
 
-    for (int y = 0; y < SCREEN_H; ++y)
+static void LockMouse(HWND hwnd, bool lock)
+{
+    if (lock == g_mouseLocked) return;
+    g_mouseLocked = lock;
+
+    if (lock)
     {
-        DWORD c = (y < SCREEN_H / 2) ? CEILING : FLOOR;
-        for (int x = 0; x < SCREEN_W; ++x)
-            g_pixels[y * SCREEN_W + x] = c;
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        POINT tl = { rc.left, rc.top }, br = { rc.right, rc.bottom };
+        ClientToScreen(hwnd, &tl);
+        ClientToScreen(hwnd, &br);
+        RECT clip = { tl.x, tl.y, br.x, br.y };
+        ClipCursor(&clip);
+        ShowCursor(FALSE);
+
+        POINT c = ClientCenter(hwnd);
+        SetCursorPos(c.x, c.y);
     }
-
-    for (int x = 0; x < SCREEN_W; ++x)
+    else
     {
-        // ray direction for this column
-        float camX = 2.0f * x / SCREEN_W - 1.0f;
-        float rayX = p.dirX + p.planeX * camX;
-        float rayY = p.dirY + p.planeY * camX;
-
-        int mapX = (int)p.x, mapY = (int)p.y;
-        float deltaX = (rayX == 0) ? 1e30f : fabsf(1.0f / rayX);
-        float deltaY = (rayY == 0) ? 1e30f : fabsf(1.0f / rayY);
-
-        int stepX, stepY;
-        float sideX, sideY;
-        if (rayX < 0) { stepX = -1; sideX = (p.x - mapX) * deltaX; }
-        else { stepX = 1; sideX = (mapX + 1.0f - p.x) * deltaX; }
-        if (rayY < 0) { stepY = -1; sideY = (p.y - mapY) * deltaY; }
-        else { stepY = 1; sideY = (mapY + 1.0f - p.y) * deltaY; }
-
-        // DDA: step through grid cells until we hit a wall
-        int side = 0;
-        while (true)
-        {
-            if (sideX < sideY) { sideX += deltaX; mapX += stepX; side = 0; }
-            else { sideY += deltaY; mapY += stepY; side = 1; }
-            if (IsWall(mapX, mapY)) break;
-        }
-
-        float dist = (side == 0) ? sideX - deltaX : sideY - deltaY;
-        if (dist < 0.0001f) dist = 0.0001f;
-
-        int lineH = (int)(SCREEN_H / dist);
-        int top = SCREEN_H / 2 - lineH / 2;
-        int bottom = SCREEN_H / 2 + lineH / 2;
-        if (top < 0)           top = 0;
-        if (bottom > SCREEN_H) bottom = SCREEN_H;
-
-        // green, darker with distance, darker on Y-facing sides
-        float light = 1.0f - dist / 12.0f;
-        if (light < 0.15f) light = 0.15f;
-        if (side == 1) light *= 0.7f;
-        DWORD green = (DWORD)(220 * light);
-        DWORD color = (green / 5) << 16 | green << 8 | (green / 5);
-
-        for (int y = top; y < bottom; ++y)
-            g_pixels[y * SCREEN_W + x] = color;
+        ClipCursor(nullptr);
+        ShowCursor(TRUE);
     }
 }
 
-// ---------------- win32 ----------------
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+// ---------------- state changes ----------------
+static void ClearKeys()
+{
+    for (int i = 0; i < 256; ++i) g_keys[i] = false;
+}
+
+static void EnterMenu(HWND hwnd)
+{
+    g_state = STATE_MENU;
+    LockMouse(hwnd, false);
+    ClearKeys();
+}
+
+static void EnterGame(HWND hwnd)
+{
+    g_state = STATE_PLAYING;
+    ClearKeys();
+    LockMouse(hwnd, true);
+}
+
+static void HandleMenuAction(HWND hwnd, MenuAction action)
+{
+    if (action == MENU_PLAY) EnterGame(hwnd);
+    if (action == MENU_EXIT) g_running = false;
+}
+
+// Window pixels -> game pixels (the window may be any size)
+static POINT ToGameCoords(HWND hwnd, LPARAM lp)
+{
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    POINT p = { 0, 0 };
+    if (rc.right > 0 && rc.bottom > 0)
+    {
+        p.x = GET_X_LPARAM(lp) * SCREEN_W / rc.right;
+        p.y = GET_Y_LPARAM(lp) * SCREEN_H / rc.bottom;
+    }
+    return p;
+}
+
+// ---------------- window proc ----------------
+static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg)
     {
-    case WM_CLOSE:   g_running = false; return 0;
-    case WM_KEYDOWN: if (wp == VK_ESCAPE) g_running = false;
-        if (wp < 256) g_keys[wp] = true;  return 0;
-    case WM_KEYUP:   if (wp < 256) g_keys[wp] = false; return 0;
-    case WM_KILLFOCUS: for (int i = 0; i < 256; ++i) g_keys[i] = false; return 0;
+    case WM_CLOSE:
+        g_running = false;
+        return 0;
+
+    case WM_KEYDOWN:
+        if (g_state == STATE_MENU)
+        {
+            if (wp == VK_ESCAPE) g_running = false;
+            else HandleMenuAction(hwnd, g_menu->OnKey(wp));
+        }
+        else
+        {
+            if (wp == VK_ESCAPE) EnterMenu(hwnd);
+            else if (wp < 256)   g_keys[wp] = true;
+        }
+        return 0;
+
+    case WM_KEYUP:
+        if (wp < 256) g_keys[wp] = false;
+        return 0;
+
+    case WM_MOUSEMOVE:
+        if (g_state == STATE_MENU)
+        {
+            POINT p = ToGameCoords(hwnd, lp);
+            g_menu->OnMouseMove(p.x, p.y);
+        }
+        return 0;
+
+    case WM_LBUTTONDOWN:
+        if (g_state == STATE_MENU)
+        {
+            POINT p = ToGameCoords(hwnd, lp);
+            HandleMenuAction(hwnd, g_menu->OnClick(p.x, p.y));
+        }
+        else
+        {
+            LockMouse(hwnd, true);   // re-grab after alt-tab
+        }
+        return 0;
+
+    case WM_KILLFOCUS:
+    case WM_ENTERSIZEMOVE:
+        LockMouse(hwnd, false);
+        ClearKeys();
+        return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-void Present(HWND hwnd)
+// ---------------- back buffer ----------------
+static bool CreateBackBuffer(HWND hwnd)
 {
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = SCREEN_W;
-    bmi.bmiHeader.biHeight = -SCREEN_H; // top-down
+    bmi.bmiHeader.biHeight = -SCREEN_H;   // top-down rows
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
+    HDC windowDC = GetDC(hwnd);
+    g_backDC = CreateCompatibleDC(windowDC);
+    ReleaseDC(hwnd, windowDC);
+
+    HBITMAP bmp = CreateDIBSection(g_backDC, &bmi, DIB_RGB_COLORS, (void**)&g_pixels, nullptr, 0);
+    if (!bmp) return false;
+    SelectObject(g_backDC, bmp);
+    return true;
+}
+
+static void Present(HWND hwnd)
+{
     RECT rc;
     GetClientRect(hwnd, &rc);
     HDC dc = GetDC(hwnd);
-    StretchDIBits(dc, 0, 0, rc.right, rc.bottom, 0, 0, SCREEN_W, SCREEN_H,
-        g_pixels, &bmi, DIB_RGB_COLORS, SRCCOPY);
+    SetStretchBltMode(dc, COLORONCOLOR);
+    StretchBlt(dc, 0, 0, rc.right, rc.bottom, g_backDC, 0, 0, SCREEN_W, SCREEN_H, SRCCOPY);
     ReleaseDC(hwnd, dc);
 }
 
+// ---------------- entry point ----------------
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.lpszClassName = L"Raycaster";
+    wc.lpszClassName = L"PurrcelExpress";
     RegisterClassW(&wc);
 
     RECT wr = { 0, 0, SCREEN_W * SCALE, SCREEN_H * SCALE };
     AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
-    HWND hwnd = CreateWindowW(L"Raycaster", L"Raycaster", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+    HWND hwnd = CreateWindowW(wc.lpszClassName, L"Purrcel Express", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         CW_USEDEFAULT, CW_USEDEFAULT,
         wr.right - wr.left, wr.bottom - wr.top,
         nullptr, nullptr, hInst, nullptr);
+    if (!hwnd || !CreateBackBuffer(hwnd)) return 1;
 
-    Player player;
+    Player   player;
+    Menu     menu;
+    Renderer renderer;
+    g_player = &player;
+    g_menu = &menu;
+    g_renderer = &renderer;
 
     LARGE_INTEGER freq, last, now;
     QueryPerformanceFrequency(&freq);
@@ -200,27 +230,39 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        if (!g_running) break;
 
         QueryPerformanceCounter(&now);
         float dt = (float)(now.QuadPart - last.QuadPart) / freq.QuadPart;
         last = now;
         if (dt > 0.05f) dt = 0.05f;
 
-        // turning
-        if (g_keys[VK_LEFT] || g_keys['Q']) player.Rotate(-TURN_SPEED * dt);
-        if (g_keys[VK_RIGHT] || g_keys['E']) player.Rotate(TURN_SPEED * dt);
+        GdiFlush();   // let GDI finish before we touch the pixels directly
 
-        // moving
-        float speed = MOVE_SPEED * dt;
-        if (g_keys['W'] || g_keys[VK_UP])   player.Move(player.dirX * speed, player.dirY * speed);
-        if (g_keys['S'] || g_keys[VK_DOWN]) player.Move(-player.dirX * speed, -player.dirY * speed);
-        if (g_keys['D']) player.Move(-player.dirY * speed, player.dirX * speed);
-        if (g_keys['A']) player.Move(player.dirY * speed, -player.dirX * speed);
+        if (g_state == STATE_PLAYING)
+        {
+            int mouseDX = 0;
+            if (g_mouseLocked)
+            {
+                POINT p, c = ClientCenter(hwnd);
+                GetCursorPos(&p);
+                mouseDX = p.x - c.x;
+                SetCursorPos(c.x, c.y);
+            }
 
-        Render(player);
+            player.Update(dt, g_keys, mouseDX);
+            renderer.DrawWorld(g_pixels, player);
+        }
+        else
+        {
+            menu.Draw(g_backDC, g_pixels);
+            Sleep(1);   // menu doesn't need to spin the CPU
+        }
+
         Present(hwnd);
     }
 
+    LockMouse(hwnd, false);
     DestroyWindow(hwnd);
     return 0;
 }
