@@ -1,3 +1,4 @@
+#include <math.h>
 #include "Screen.h"
 #include "Config.h"
 
@@ -146,16 +147,111 @@ void MainMenuScreen::Render(Frame& frame)
 // RUN
 // =====================================================
 
+// Draws text with a 1px dark shadow so it stays readable over the 3D view.
+static void ShadowText(HDC dc, const wchar_t* text, RECT r, UINT flags, COLORREF color)
+{
+    RECT shadow = r;
+    OffsetRect(&shadow, 1, 1);
+    SetTextColor(dc, RGB(0, 0, 0));
+    DrawTextW(dc, text, -1, &shadow, flags);
+    SetTextColor(dc, color);
+    DrawTextW(dc, text, -1, &r, flags);
+}
+
+RunScreen::RunScreen() : m_time(0.0f)
+{
+    m_hudFont = MakeFont(16);
+    m_bigFont = MakeFont(48);
+    StartNewRun();
+}
+
+RunScreen::~RunScreen()
+{
+    DeleteObject(m_hudFont);
+    DeleteObject(m_bigFont);
+}
+
+void RunScreen::StartNewRun()
+{
+    m_player.Reset(m_map.StartX(), m_map.StartY());
+    m_delivery.Start(m_map.StartX(), m_map.StartY(), m_map.SpotX(), m_map.SpotY());
+}
+
 GameState RunScreen::Update(float dt, const Input& input)
 {
+    m_time += dt;
+
     if (input.WasPressed(VK_ESCAPE))
         return GameState::MainMenu;   // PLAY again resumes where you left off
 
+    if (m_delivery.GetPhase() == Delivery::Phase::Done)
+    {
+        if (input.WasPressed(VK_RETURN)) StartNewRun();
+        return GameState::Run;   // frozen until ENTER
+    }
+
     m_player.Update(dt, input, m_map);
+    m_delivery.Update(m_player.X(), m_player.Y());
     return GameState::Run;
 }
 
 void RunScreen::Render(Frame& frame)
 {
     m_renderer.DrawWorld(frame.pixels, m_map, m_player);
+
+    // Marker on the current target: orange = drop-off, green = way home.
+    if (m_delivery.GetPhase() != Delivery::Phase::Done)
+    {
+        bool toSpot = m_delivery.GetPhase() == Delivery::Phase::ToSpot;
+        DWORD color = toSpot ? 0xFF8C00 : 0x50FF50;
+        float pulse = 0.5f + 0.5f * sinf(m_time * 3.0f);
+        m_renderer.DrawMarker(frame.pixels, m_player,
+            m_delivery.TargetX(), m_delivery.TargetY(), color, pulse);
+    }
+
+    m_renderer.DrawCrosshair(frame.pixels);
+    DrawHud(frame);
+}
+
+void RunScreen::DrawHud(Frame& frame)
+{
+    HDC dc = frame.dc;
+    SetBkMode(dc, TRANSPARENT);
+    HGDIOBJ oldFont = SelectObject(dc, m_hudFont);
+
+    Delivery::Phase phase = m_delivery.GetPhase();
+
+    if (phase != Delivery::Phase::Done)
+    {
+        const wchar_t* objective = (phase == Delivery::Phase::ToSpot)
+            ? L"Deliver the package to the ORANGE marker"
+            : L"Package delivered! Head back to the GREEN marker";
+
+        RECT line1 = { 10, 8,  frame.width, 28 };
+        RECT line2 = { 10, 26, frame.width, 46 };
+        ShadowText(dc, objective, line1, DT_LEFT | DT_SINGLELINE, RGB(255, 220, 0));
+
+        // One decimal place with plain Win32 (wsprintf has no floats).
+        int tenths = (int)(m_delivery.DistanceFrom(m_player.X(), m_player.Y()) * 10.0f);
+        wchar_t distText[64];
+        wsprintfW(distText, L"Distance: %d.%d tiles", tenths / 10, tenths % 10);
+        ShadowText(dc, distText, line2, DT_LEFT | DT_SINGLELINE, RGB(230, 230, 230));
+    }
+    else
+    {
+        // Darken the view, then the message on top.
+        for (int i = 0; i < frame.width * frame.height; ++i)
+            frame.pixels[i] = (frame.pixels[i] >> 2) & 0x3F3F3F;
+
+        SelectObject(dc, m_bigFont);
+        RECT title = { 0, 130, frame.width, 190 };
+        ShadowText(dc, L"DELIVERED!", title, DT_CENTER | DT_SINGLELINE, RGB(50, 220, 50));
+
+        SelectObject(dc, m_hudFont);
+        RECT hint = { 0, 210, frame.width, 230 };
+        ShadowText(dc, L"ENTER: new delivery     ESC: main menu", hint,
+            DT_CENTER | DT_SINGLELINE, RGB(200, 200, 200));
+    }
+
+    SelectObject(dc, oldFont);
 }

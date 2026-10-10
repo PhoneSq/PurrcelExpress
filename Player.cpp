@@ -8,12 +8,12 @@
 
 Player::Player()
 {
-    Reset();
+    Reset(1.5f, 1.5f);
 }
 
-void Player::Reset()
+void Player::Reset(float x, float y)
 {
-    m_x = 1.5f;      m_y = 1.5f;
+    m_x = x;         m_y = y;
     m_dirX = 1.0f;   m_dirY = 0.0f;
     m_planeX = 0.0f; m_planeY = 0.66f;
 }

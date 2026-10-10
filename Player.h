@@ -14,7 +14,8 @@ class Player
 public:
     Player();
 
-    void Reset();
+    // Puts the player at (x, y), facing +X.
+    void Reset(float x, float y);
     void Update(float dt, const Input& input, const Map& map);
 
     float X() const { return m_x; }

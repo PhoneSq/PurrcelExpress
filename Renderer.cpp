@@ -45,6 +45,7 @@ void Renderer::DrawWorld(DWORD* pixels, const Map& map, const Player& p)
 
         float dist = (side == 0) ? sideX - deltaX : sideY - deltaY;
         if (dist < 0.0001f) dist = 0.0001f;
+        m_depth[x] = dist;
 
         int lineH = (int)(SCREEN_H / dist);
         int top = SCREEN_H / 2 - lineH / 2;
@@ -62,8 +63,65 @@ void Renderer::DrawWorld(DWORD* pixels, const Map& map, const Player& p)
         for (int y = top; y < bottom; ++y)
             pixels[y * SCREEN_W + x] = color;
     }
+}
 
-    DrawCrosshair(pixels);
+// Mixes color into the pixel already there. alpha: 0..255
+static void Blend(DWORD& dst, DWORD color, int alpha)
+{
+    int r = (int)((dst >> 16) & 255), g = (int)((dst >> 8) & 255), b = (int)(dst & 255);
+    int cr = (int)((color >> 16) & 255), cg = (int)((color >> 8) & 255), cb = (int)(color & 255);
+    r += (cr - r) * alpha / 255;
+    g += (cg - g) * alpha / 255;
+    b += (cb - b) * alpha / 255;
+    dst = (DWORD)(r << 16 | g << 8 | b);
+}
+
+void Renderer::DrawMarker(DWORD* pixels, const Player& p,
+    float worldX, float worldY, DWORD color, float pulse)
+{
+    // Into camera space: tx = sideways, ty = depth.
+    float sx = worldX - p.X();
+    float sy = worldY - p.Y();
+    float invDet = 1.0f / (p.PlaneX() * p.DirY() - p.DirX() * p.PlaneY());
+    float tx = invDet * (p.DirY() * sx - p.DirX() * sy);
+    float ty = invDet * (-p.PlaneY() * sx + p.PlaneX() * sy);
+    if (ty < 0.2f) return;   // behind or right on top of us
+
+    const float PILLAR_WIDTH = 0.3f;   // tiles
+    float planeLen = sqrtf(p.PlaneX() * p.PlaneX() + p.PlaneY() * p.PlaneY());
+
+    int centerX = (int)((SCREEN_W / 2) * (1.0f + tx / ty));
+    int halfWidth = (int)(PILLAR_WIDTH * 0.5f * (SCREEN_W / 2) / (planeLen * ty));
+    if (halfWidth < 1) halfWidth = 1;
+
+    // Same height as a wall at that distance: floor to ceiling.
+    int height = (int)(SCREEN_H / ty);
+    int bottom = SCREEN_H / 2 + height / 2;
+    int top = SCREEN_H / 2 - height / 2;
+
+    int x0 = centerX - halfWidth, x1 = centerX + halfWidth;
+    int y0 = top < 0 ? 0 : top;
+    int y1 = bottom > SCREEN_H ? SCREEN_H : bottom;
+    if (x0 < 0) x0 = 0;
+    if (x1 > SCREEN_W - 1) x1 = SCREEN_W - 1;
+
+    for (int x = x0; x <= x1; ++x)
+    {
+        if (ty >= m_depth[x]) continue;   // a wall is in front
+
+        // 0 in the middle of the pillar, 1 at its edges.
+        float u = (float)(x - centerX) / halfWidth;
+        if (u < 0) u = -u;
+        float across = 1.0f - u * u;
+        if (across <= 0.0f) continue;
+
+        for (int y = y0; y < y1; ++y)
+        {
+            float up = (float)(bottom - y) / height;          // 0 floor, 1 top
+            float strength = across * (1.0f - 0.7f * up) * (0.6f + 0.4f * pulse);
+            Blend(pixels[y * SCREEN_W + x], color, (int)(230 * strength));
+        }
+    }
 }
 
 void Renderer::DrawCrosshair(DWORD* pixels)
