@@ -124,6 +124,75 @@ void Renderer::DrawMarker(DWORD* pixels, const Player& p,
     }
 }
 
+void Renderer::DrawEnemy(DWORD* pixels, const Player& p,
+    float worldX, float worldY, DWORD color)
+{
+    float sx = worldX - p.X();
+    float sy = worldY - p.Y();
+    float invDet = 1.0f / (p.PlaneX() * p.DirY() - p.DirX() * p.PlaneY());
+    float tx = invDet * (p.DirY() * sx - p.DirX() * sy);
+    float ty = invDet * (-p.PlaneY() * sx + p.PlaneX() * sy);
+    if (ty < 0.15f) return;
+
+    // 75% of a wall's height, standing on the floor.
+    int wallH = (int)(SCREEN_H / ty);
+    int height = wallH * 3 / 4;
+    int width = height * 3 / 5;
+    if (height < 2 || width < 2) return;
+
+    int centerX = (int)((SCREEN_W / 2) * (1.0f + tx / ty));
+    int bottom = SCREEN_H / 2 + wallH / 2;
+    int top = bottom - height;
+    int left = centerX - width / 2;
+
+    // Darker with distance.
+    float light = 1.0f - ty / 14.0f;
+    if (light < 0.3f) light = 0.3f;
+    int r = (int)(((color >> 16) & 255) * light);
+    int g = (int)(((color >> 8) & 255) * light);
+    int b = (int)((color & 255) * light);
+    DWORD body = (DWORD)(r << 16 | g << 8 | b);
+    DWORD eye = 0xF0F0F0;
+    DWORD pupil = 0x101018;
+
+    for (int x = left; x < left + width; ++x)
+    {
+        if (x < 0 || x >= SCREEN_W) continue;
+        if (ty >= m_depth[x]) continue;   // a wall is in front
+
+        float u = (float)(x - left) / width * 2.0f - 1.0f;   // -1..1
+
+        for (int y = top; y < bottom; ++y)
+        {
+            if (y < 0 || y >= SCREEN_H) continue;
+            float v = (float)(y - top) / height;              // 0 top, 1 bottom
+
+            // Squat blob: rounded top corners and rounded bottom corners.
+            float cornerV = (v < 0.5f) ? (0.3f - v) / 0.3f : (v - 0.85f) / 0.15f;
+            if (cornerV > 0.0f && fabsf(u) > 0.6f)
+            {
+                float cu = (fabsf(u) - 0.6f) / 0.4f;
+                if (cu * cu + cornerV * cornerV > 1.0f) continue;
+            }
+
+            DWORD c = body;
+
+            // Angry eyes: slanted brow cuts off the inner top of each eye.
+            for (int side = -1; side <= 1; side += 2)
+            {
+                float ex = u - side * 0.35f, ey = (v - 0.35f) * 2.0f;
+                if (ex * ex + ey * ey < 0.05f)
+                {
+                    bool underBrow = ey < -0.05f - side * ex * 1.2f;
+                    if (underBrow) continue;   // brow: stays body color
+                    c = (ex * ex + (ey - 0.05f) * (ey - 0.05f) < 0.012f) ? pupil : eye;
+                }
+            }
+            pixels[y * SCREEN_W + x] = c;
+        }
+    }
+}
+
 void Renderer::DrawCrosshair(DWORD* pixels)
 {
     int cx = SCREEN_W / 2, cy = SCREEN_H / 2;

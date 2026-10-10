@@ -5,15 +5,19 @@
 // MAP
 // =====================================================
 
+// Legend:
+//   '#' wall      '.' empty
+//   'S' start     'D' drop-off
+//   'B' blue enemy   'Y' yellow enemy   'P' purple enemy
 static const char* const LEVEL[16] =
 {
     "################",
-    "#S.............#",
+    "#S...........B.#",
     "#..##......##..#",
     "#..#........#..#",
     "#..............#",
     "#.....####.....#",
-    "#.....#..#.....#",
+    "#.....#P.#.....#",
     "#.....#..#.....#",
     "#..............#",
     "#..#........#..#",
@@ -21,20 +25,32 @@ static const char* const LEVEL[16] =
     "#..............#",
     "#......##......#",
     "#.............D#",
-    "#..............#",
+    "#.Y............#",
     "################",
 };
 
 Map::Map()
     : m_rows(LEVEL),
     m_startX(1.5f), m_startY(1.5f),
-    m_spotX(1.5f), m_spotY(1.5f)
+    m_spotX(1.5f), m_spotY(1.5f),
+    m_spawnCount(0)
 {
     for (int y = 0; y < HEIGHT; ++y)
         for (int x = 0; x < WIDTH; ++x)
         {
-            if (m_rows[y][x] == 'S') { m_startX = x + 0.5f; m_startY = y + 0.5f; }
-            if (m_rows[y][x] == 'D') { m_spotX = x + 0.5f; m_spotY = y + 0.5f; }
+            char c = m_rows[y][x];
+            float cx = x + 0.5f, cy = y + 0.5f;
+
+            if (c == 'S') { m_startX = cx; m_startY = cy; }
+            if (c == 'D') { m_spotX = cx; m_spotY = cy; }
+
+            if ((c == 'B' || c == 'Y' || c == 'P') && m_spawnCount < MAX_SPAWNS)
+            {
+                m_spawns[m_spawnCount].x = cx;
+                m_spawns[m_spawnCount].y = cy;
+                m_spawns[m_spawnCount].kind = c;
+                ++m_spawnCount;
+            }
         }
 }
 

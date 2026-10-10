@@ -19,6 +19,11 @@ public:
     void DrawMarker(DWORD* pixels, const Player& player,
         float worldX, float worldY, DWORD color, float pulse);
 
+    // A placeholder enemy figure standing on the floor at (worldX, worldY).
+    // Draw enemies far to near so closer ones cover farther ones.
+    void DrawEnemy(DWORD* pixels, const Player& player,
+        float worldX, float worldY, DWORD color);
+
     void DrawCrosshair(DWORD* pixels);
 
 private:

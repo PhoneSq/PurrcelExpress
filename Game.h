@@ -13,6 +13,7 @@ enum class GameState
 {
     MainMenu,
     Run,
+    GameOver,
     Quit      // not a screen: tells the loop to exit
 };
 
@@ -138,4 +139,5 @@ private:
     // Screens (created in Init)
     Screen* m_mainMenu;
     Screen* m_run;
+    Screen* m_gameOver;
 };

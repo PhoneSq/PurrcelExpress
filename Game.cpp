@@ -168,7 +168,7 @@ Game::Game()
     : m_hwnd(nullptr),
     m_state(GameState::MainMenu),
     m_backDC(nullptr), m_backBitmap(nullptr), m_oldBitmap(nullptr),
-    m_mainMenu(nullptr), m_run(nullptr)
+    m_mainMenu(nullptr), m_run(nullptr), m_gameOver(nullptr)
 {
     m_frame.pixels = nullptr;
     m_frame.dc = nullptr;
@@ -182,6 +182,7 @@ Game::~Game()
 
     delete m_mainMenu;
     delete m_run;
+    delete m_gameOver;
 
     if (m_backDC)
     {
@@ -221,6 +222,7 @@ bool Game::Init(HWND hwnd)
     // ----- screens -----
     m_mainMenu = new MainMenuScreen();
     m_run = new RunScreen();
+    m_gameOver = new GameOverScreen();
 
     SwitchTo(GameState::MainMenu);
     return true;
@@ -232,6 +234,7 @@ Screen* Game::ScreenFor(GameState state) const
     {
     case GameState::MainMenu: return m_mainMenu;
     case GameState::Run:      return m_run;
+    case GameState::GameOver: return m_gameOver;
     default:                  return nullptr;
     }
 }

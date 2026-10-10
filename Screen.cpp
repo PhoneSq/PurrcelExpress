@@ -158,11 +158,22 @@ static void ShadowText(HDC dc, const wchar_t* text, RECT r, UINT flags, COLORREF
     DrawTextW(dc, text, -1, &r, flags);
 }
 
-RunScreen::RunScreen() : m_time(0.0f)
+RunScreen::RunScreen() : m_enemyCount(0), m_time(0.0f), m_needsReset(false)
 {
     m_hudFont = MakeFont(16);
     m_bigFont = MakeFont(48);
     StartNewRun();
+}
+
+void RunScreen::Enter()
+{
+    // After dying, PLAY / RETRY starts a fresh run.
+    // After ESC mid-run, PLAY resumes where you left off.
+    if (m_needsReset)
+    {
+        StartNewRun();
+        m_needsReset = false;
+    }
 }
 
 RunScreen::~RunScreen()
@@ -175,6 +186,31 @@ void RunScreen::StartNewRun()
 {
     m_player.Reset(m_map.StartX(), m_map.StartY());
     m_delivery.Start(m_map.StartX(), m_map.StartY(), m_map.SpotX(), m_map.SpotY());
+    SpawnEnemies();
+}
+
+void RunScreen::SpawnEnemies()
+{
+    m_enemyCount = 0;
+    for (int i = 0; i < m_map.SpawnCount() && m_enemyCount < MAX_ENEMIES; ++i)
+    {
+        const Map::Spawn& s = m_map.GetSpawn(i);
+        EnemyType type = (s.kind == 'Y') ? EnemyType::Yellow
+            : (s.kind == 'P') ? EnemyType::Purple
+            : EnemyType::Blue;
+        m_enemies[m_enemyCount++].Spawn(s.x, s.y, type);
+    }
+}
+
+bool RunScreen::PlayerCaught() const
+{
+    for (int i = 0; i < m_enemyCount; ++i)
+    {
+        float dx = m_enemies[i].X() - m_player.X();
+        float dy = m_enemies[i].Y() - m_player.Y();
+        if (dx * dx + dy * dy < ENEMY_CATCH_RANGE * ENEMY_CATCH_RANGE) return true;
+    }
+    return false;
 }
 
 GameState RunScreen::Update(float dt, const Input& input)
@@ -191,6 +227,16 @@ GameState RunScreen::Update(float dt, const Input& input)
     }
 
     m_player.Update(dt, input, m_map);
+
+    for (int i = 0; i < m_enemyCount; ++i)
+        m_enemies[i].Update(dt, m_map, m_player, m_enemies, m_enemyCount);
+
+    if (PlayerCaught())
+    {
+        m_needsReset = true;
+        return GameState::GameOver;
+    }
+
     m_delivery.Update(m_player.X(), m_player.Y());
     return GameState::Run;
 }
@@ -209,8 +255,38 @@ void RunScreen::Render(Frame& frame)
             m_delivery.TargetX(), m_delivery.TargetY(), color, pulse);
     }
 
+    DrawEnemies(frame);
     m_renderer.DrawCrosshair(frame.pixels);
     DrawHud(frame);
+}
+
+void RunScreen::DrawEnemies(Frame& frame)
+{
+    // Far to near, so closer enemies are drawn over farther ones.
+    int   order[MAX_ENEMIES];
+    float dist[MAX_ENEMIES];
+    for (int i = 0; i < m_enemyCount; ++i)
+    {
+        float dx = m_enemies[i].X() - m_player.X();
+        float dy = m_enemies[i].Y() - m_player.Y();
+        dist[i] = dx * dx + dy * dy;
+        order[i] = i;
+    }
+    for (int i = 1; i < m_enemyCount; ++i)   // insertion sort, farthest first
+    {
+        int k = order[i], j = i - 1;
+        while (j >= 0 && dist[order[j]] < dist[k]) { order[j + 1] = order[j]; --j; }
+        order[j + 1] = k;
+    }
+
+    for (int i = 0; i < m_enemyCount; ++i)
+    {
+        const Enemy& e = m_enemies[order[i]];
+        DWORD color = (e.Type() == EnemyType::Yellow) ? 0xF0D020
+            : (e.Type() == EnemyType::Purple) ? 0xA040E0
+            : 0x3070F0;
+        m_renderer.DrawEnemy(frame.pixels, m_player, e.X(), e.Y(), color);
+    }
 }
 
 void RunScreen::DrawHud(Frame& frame)
@@ -251,6 +327,67 @@ void RunScreen::DrawHud(Frame& frame)
         RECT hint = { 0, 210, frame.width, 230 };
         ShadowText(dc, L"ENTER: new delivery     ESC: main menu", hint,
             DT_CENTER | DT_SINGLELINE, RGB(200, 200, 200));
+    }
+
+    SelectObject(dc, oldFont);
+}
+
+
+// =====================================================
+// GAME OVER
+// =====================================================
+
+// Seconds the screen ignores input, so keys mashed while
+// running from enemies don't skip it by accident.
+static const float GAME_OVER_INPUT_DELAY = 0.8f;
+
+GameOverScreen::GameOverScreen() : m_timer(0.0f)
+{
+    m_titleFont = MakeFont(52);
+    m_textFont = MakeFont(18);
+}
+
+GameOverScreen::~GameOverScreen()
+{
+    DeleteObject(m_titleFont);
+    DeleteObject(m_textFont);
+}
+
+void GameOverScreen::Enter()
+{
+    m_timer = 0.0f;
+}
+
+GameState GameOverScreen::Update(float dt, const Input& input)
+{
+    m_timer += dt;
+    if (m_timer < GAME_OVER_INPUT_DELAY) return GameState::GameOver;
+
+    if (input.WasPressed(VK_RETURN) || input.WasPressed(VK_SPACE)) return GameState::Run;
+    if (input.WasPressed(VK_ESCAPE)) return GameState::MainMenu;
+    return GameState::GameOver;
+}
+
+void GameOverScreen::Render(Frame& frame)
+{
+    for (int i = 0; i < frame.width * frame.height; ++i) frame.pixels[i] = 0x280000;
+
+    HDC dc = frame.dc;
+    SetBkMode(dc, TRANSPARENT);
+
+    HGDIOBJ oldFont = SelectObject(dc, m_titleFont);
+    RECT title = { 0, 110, frame.width, 175 };
+    ShadowText(dc, L"YOU GOT CAUGHT", title, DT_CENTER | DT_SINGLELINE, RGB(255, 60, 60));
+
+    SelectObject(dc, m_textFont);
+    RECT sub = { 0, 190, frame.width, 215 };
+    ShadowText(dc, L"The package never made it.", sub, DT_CENTER | DT_SINGLELINE, RGB(220, 180, 180));
+
+    if (m_timer >= GAME_OVER_INPUT_DELAY)
+    {
+        RECT hint = { 0, 260, frame.width, 285 };
+        ShadowText(dc, L"ENTER: try again     ESC: main menu", hint,
+            DT_CENTER | DT_SINGLELINE, RGB(170, 130, 130));
     }
 
     SelectObject(dc, oldFont);

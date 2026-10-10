@@ -22,14 +22,27 @@ public:
     float SpotX()  const { return m_spotX; }
     float SpotY()  const { return m_spotY; }
 
+    // Enemy spawn tiles: 'B' blue, 'Y' yellow, 'P' purple.
+    struct Spawn
+    {
+        float x, y;
+        char  kind;   // 'B', 'Y' or 'P'
+    };
+    int          SpawnCount()     const { return m_spawnCount; }
+    const Spawn& GetSpawn(int i)  const { return m_spawns[i]; }
+
 private:
     static const int WIDTH = 16;
     static const int HEIGHT = 16;
+    static const int MAX_SPAWNS = 8;
 
-    const char* const* m_rows;   // '#' wall, '.' empty, 'S' start, 'D' drop-off
+    const char* const* m_rows;   // see the legend in World.cpp
 
     float m_startX, m_startY;
     float m_spotX, m_spotY;
+
+    Spawn m_spawns[MAX_SPAWNS];
+    int   m_spawnCount;
 };
 
 
