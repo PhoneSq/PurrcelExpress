@@ -28,6 +28,7 @@ const float HEDGE_HEIGHT = 0.42f;  // hedges are low walls: this much of a wall'
 const float ROOF_SLOPE = 0.6f;   // roof rise per tile in from the edge (wall heights)
 const float ROOF_MAX_RISE = 0.9f;   // tallest a roof gets above the walls
 const float PACKAGE_SCALE = 0.18f;  // delivered package left on the doorstep
+const float BIKE_SCALE = 0.60f;  // the delivery bike parked at the start (height vs a wall)
 // Dog height compared to a wall, per type: { Blue (Chasey), Yellow (Spiky), Purple (Blocky) }
 const float DOG_SPRITE_SCALES[3] = { 0.48f, 0.40f, 0.40f };
 const bool  DOG_SPRITE_FACES_RIGHT = true;  // which way the dog PNGs face (flipped for the other way)

@@ -1239,10 +1239,12 @@ RunScreen::RunScreen(GameData& data)
     m_boneActive(false), m_boneX(0), m_boneY(0), m_boneTimer(0), m_time(0.0f), m_hitFlash(0.0f),
     m_messageColor(RGB(255, 255, 255)), m_messageTimer(0.0f)
 {
+    m_bikeX = m_bikeY = 0.0f;
     m_message[0] = 0;
 
     // The cat pictures are loaded in Enter (they depend on which cat you picked).
     m_package.Load(L"Pack.png");
+    m_bike.Load(L"Bike.png");
     MakeShadow(m_shadow);
     if (!m_furBall.Load(L"Fur.png")) MakeFurBall(m_furBall);
     for (int i = 0; i < 3; ++i) MakeDizzy(m_dizzy[i], i);
@@ -1278,6 +1280,21 @@ void RunScreen::Enter()
     m_map.Generate(MapSizeFor(c.enemies), m_data.rng);
     m_player.SetCharacter(m_data.character);
     m_player.Reset(m_map.StartX(), m_map.StartY());
+
+    // Park the bike next to the start: ahead and to the left of the cat
+    // (it spawns facing +X), so it's the first thing you see. Falls back to
+    // other spots if that one's a wall. Never right behind the cat - the
+    // third person camera sits there.
+    {
+        const float spots[5][2] = { { 1.1f, -1.05f }, { 1.1f, 1.05f }, { 1.3f, 0.0f }, { 0.0f, 1.1f }, { 0.0f, -1.1f } };
+        m_bikeX = m_map.StartX() + 1.1f;
+        m_bikeY = m_map.StartY();
+        for (int i = 0; i < 5; ++i)
+        {
+            float bx = m_map.StartX() + spots[i][0], by = m_map.StartY() + spots[i][1];
+            if (!m_map.IsWall((int)bx, (int)by)) { m_bikeX = bx; m_bikeY = by; break; }
+        }
+    }
     LoadCatPictures();
     m_run.Start(c, m_map, m_data.rng);
     m_renderer.SetSky(c.time, m_data.rng.Next());   // new sky + skyline every delivery
@@ -1680,7 +1697,7 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
         int   tile;    // prop tile type
         float x, y;
     };
-    enum { KIND_PROP, KIND_DOG, KIND_CAT, KIND_PACKAGE, KIND_BONE, KIND_FUR };
+    enum { KIND_PROP, KIND_DOG, KIND_CAT, KIND_PACKAGE, KIND_BONE, KIND_FUR, KIND_BIKE };
 
     static const int MAX_ITEMS = 640;
     static Item items[MAX_ITEMS];
@@ -1702,6 +1719,15 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
         }
 
     // Packages left on the doorsteps you've delivered to.
+    if (m_bike.IsLoaded() && count < MAX_ITEMS)
+    {
+        Item& it = items[count++];
+        it.x = m_bikeX; it.y = m_bikeY;
+        it.kind = KIND_BIKE; it.index = 0; it.tile = 0;
+        float dx = it.x - cam.x, dy = it.y - cam.y;
+        it.dist = dx * dx + dy * dy;
+    }
+
     if (m_package.IsLoaded())
         for (int i = 0; i < m_run.StopCount() && count < MAX_ITEMS; ++i)
         {
@@ -1792,6 +1818,13 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
 
             if (it.tile == TILE_LAMP && m_renderer.IsNight())
                 m_renderer.DrawGlow(frame.pixels, cam, it.x, it.y, 1.07f, 0.32f, 0xFFD890);
+        }
+        else if (it.kind == KIND_BIKE)
+        {
+            // Fades when the camera's right on top of it, like the walk-through props.
+            float fade = (sqrtf(it.dist) - 0.3f) / 0.5f;
+            if (fade > 1.0f) fade = 1.0f;
+            m_renderer.DrawSprite(frame.pixels, cam, it.x, it.y, m_bike, BIKE_SCALE, false, fade, light);
         }
         else if (it.kind == KIND_FUR)
         {

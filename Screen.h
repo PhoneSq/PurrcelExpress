@@ -241,6 +241,8 @@ private:
     Texture m_catSideLeft;   // strafing left, for cats whose sides differ (else empty)
     Texture m_catAbility;    // pose while the ability is going (else empty)
     Texture m_package;       // left on the doorstep once delivered (Pack.png)
+    Texture m_bike;          // parked at the start (Bike.png)
+    float   m_bikeX, m_bikeY;
 
     // Dog pictures, one per type (Blue, Yellow, Purple). A type without
     // a picture is drawn as the placeholder blob.
