@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <math.h>
 #include "Character.h"
 #include "Renderer.h"    // Texture
 #include "AItexture.h"   // the pictures
@@ -14,6 +15,8 @@ const AbilityInfo& GetAbilityInfo(AbilityType type)
         { L"Ground Pound",  L"Jump up and slam down, knocking nearby dogs back.",         GROUND_POUND_COOLDOWN, 0.0f },
         { L"Fur Barrage",   L"For 5 seconds, click or SPACE to shoot fur balls. "
                             L"Hit dogs see stars for 2 seconds.",                         FUR_BARRAGE_COOLDOWN,  FUR_BARRAGE_TIME },
+        { L"Dash",          L"Float up and zip forward the way you're looking. "
+                            L"Dogs can't bite you mid-dash.",                             DASH_COOLDOWN,         0.0f },
     };
     int i = (int)type;
     if (i < 0 || i >= (int)AbilityType::Count) i = 0;
@@ -26,19 +29,20 @@ void MakeAbilityIcon(AbilityType type, Texture& out)
     {
     case AbilityType::GroundPound: MakeDumbbell(out); break;
     case AbilityType::FurBarrage:  if (!out.Load(L"Fur.png")) MakeFurBall(out); break;   // reuses the fur ball for now
+    case AbilityType::Dash:        if (!out.Load(L"Dash.png")) MakeDumbbell(out); break;  // the dash pose for now
     default: break;
     }
 }
 
 const CharacterInfo& GetCharacterInfo(CharacterType type)
 {
-    // The third slot is the fat cat again until its own cat arrives.
     static const CharacterInfo INFO[(int)CharacterType::Count] =
     {
-        // name          ability                   back               back-side              side
-        { L"Fat Cat",    AbilityType::GroundPound, L"PlayerBack.png",  L"PlayerBackSide.png",  L"PlayerSide.png"  },
-        { L"Furry Cat",  AbilityType::FurBarrage,  L"PlayerBack1.png", L"PlayerBackSide1.png", L"PlayerSide1.png" },
-        { L"Fat Cat",    AbilityType::GroundPound, L"PlayerBack.png",  L"PlayerBackSide.png",  L"PlayerSide.png"  },
+        // name          ability                   back               back-side              side (right)        side (left)          ability pose
+        { L"Fat Cat",    AbilityType::GroundPound, L"PlayerBack.png",  L"PlayerBackSide.png",  L"PlayerSide.png",   nullptr,             nullptr     },
+        { L"Furry Cat",  AbilityType::FurBarrage,  L"PlayerBack1.png", L"PlayerBackSide1.png", L"PlayerSide1.png",  nullptr,             nullptr     },
+        // Blind in the left eye: separate pictures for each side (g = good eye, b = blind eye).
+        { L"Blind Cat",  AbilityType::Dash,        L"PlayerBack2.png", L"PlayerBackSide2.png", L"PlayerSideg2.png", L"PlayerSideb2.png", L"Dash.png" },
     };
     int i = (int)type;
     if (i < 0 || i >= (int)CharacterType::Count) i = 0;
@@ -56,6 +60,8 @@ void Ability::Reset(AbilityType type)
     m_cooldown = 0.0f;
     m_airTime = 0.0f;
     m_activeTime = 0.0f;
+    m_dashTime = 0.0f;
+    m_dashGrace = 0.0f;
     m_justLanded = false;
 }
 
@@ -71,6 +77,9 @@ bool Ability::TryStart()
     case AbilityType::FurBarrage:
         m_activeTime = GetAbilityInfo(m_type).duration;
         break;
+    case AbilityType::Dash:
+        m_dashTime = DASH_TIME;
+        break;
     default:
         return false;
     }
@@ -83,6 +92,12 @@ void Ability::Update(float dt)
     m_justLanded = false;
     if (m_cooldown > 0.0f) m_cooldown -= dt;
     if (m_activeTime > 0.0f) m_activeTime -= dt;
+    if (m_dashGrace > 0.0f) m_dashGrace -= dt;
+    if (m_dashTime > 0.0f)
+    {
+        m_dashTime -= dt;
+        if (m_dashTime <= 0.0f) { m_dashTime = 0.0f; m_dashGrace = DASH_GRACE; }
+    }
 
     if (m_airTime > 0.0f)
     {
@@ -107,6 +122,17 @@ float Ability::ActiveFraction() const
     float total = GetAbilityInfo(m_type).duration;
     if (total <= 0.0f || m_activeTime <= 0.0f) return 0.0f;
     return m_activeTime / total;
+}
+
+float Ability::Height() const
+{
+    float h = JumpHeight();
+    if (m_dashTime > 0.0f)
+    {
+        float t = 1.0f - m_dashTime / DASH_TIME;      // 0 .. 1 through the dash
+        h += sinf(t * 3.14159265f) * DASH_LIFT;       // a little float up and back down
+    }
+    return h;
 }
 
 float Ability::JumpHeight() const

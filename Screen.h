@@ -16,6 +16,34 @@
 // =====================================================
 
 
+// A full-size picture (drawn for the 1280x800 window) shrunk to half size
+// once when it loads, smoothly (2x2 pixels averaged), for the 640x400 screen.
+// Empty pictures are ignored, so screens can fall back to plain drawing.
+class HalfPicture
+{
+public:
+    HalfPicture() : m_pixels(nullptr), m_alpha(nullptr), m_w(0), m_h(0) {}
+    ~HalfPicture() { Free(); }
+
+    bool Load(const wchar_t* fileName);   // false if the file isn't there
+    bool IsLoaded() const { return m_pixels != nullptr; }
+    int  Width() const { return m_w; }
+    int  Height() const { return m_h; }
+
+    // Top-left at (x, y), with soft (alpha-blended) edges.
+    void Draw(Frame& frame, int x, int y) const;
+
+private:
+    HalfPicture(const HalfPicture&);
+    HalfPicture& operator=(const HalfPicture&);
+    void Free();
+
+    DWORD* m_pixels;
+    unsigned char* m_alpha;
+    int            m_w, m_h;
+};
+
+
 // PLAY / EXIT
 class MainMenuScreen : public Screen
 {
@@ -37,6 +65,12 @@ private:
     GameState      m_targets[BUTTON_COUNT];
     int            m_selected;
     int            m_lastMouseX, m_lastMouseY;
+
+    // Hand-made menu art (assets): background + a normal / hover picture per
+    // button. Without it the menu falls back to the plain green boxes.
+    HalfPicture    m_background;
+    HalfPicture    m_buttonArt[BUTTON_COUNT][2];   // [button][0 normal, 1 hover]
+    bool           m_hasArt;
 
     HFONT m_titleFont;
     HFONT m_buttonFont;
@@ -161,6 +195,7 @@ private:
     void ShowMessage(const wchar_t* text, COLORREF color);
     void DrawActors(Frame& frame, const Camera& cam, float cameraDistance);
     void DrawSpottedAlert(Frame& frame, float cameraDistance);
+    void DrawSpeedLines(Frame& frame);   // dash
     void DrawHud(Frame& frame, const RECT& minimap);
     void DrawFinished(Frame& frame);
 
@@ -186,6 +221,13 @@ private:
     Texture m_abilityIcons[(int)AbilityType::Count];
     float   m_shake;            // screen shake seconds left
 
+    // Walk animation (cat + one per dog), driven by how far each moved.
+    WalkCycle m_catWalk;
+    WalkCycle m_dogWalk[MAX_ENEMIES];
+    float     m_lastCatX, m_lastCatY;
+    int       m_lastStep;       // walk cycle step count last frame (paw sounds)
+    float     m_lastDogX[MAX_ENEMIES], m_lastDogY[MAX_ENEMIES];
+
     // Fur barrage: fur balls in flight
     struct FurBall { float x, y, dx, dy, travelled; bool alive; };
     static const int MAX_FUR_BALLS = 24;
@@ -196,6 +238,8 @@ private:
     Texture m_catBack;       // walking straight / standing
     Texture m_catBackSide;   // walking diagonally (faces right; flipped for left)
     Texture m_catSide;       // strafing (faces right; flipped for left)
+    Texture m_catSideLeft;   // strafing left, for cats whose sides differ (else empty)
+    Texture m_catAbility;    // pose while the ability is going (else empty)
     Texture m_package;       // left on the doorstep once delivered (Pack.png)
 
     // Dog pictures, one per type (Blue, Yellow, Purple). A type without

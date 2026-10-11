@@ -82,6 +82,14 @@ void Player::Reset(float x, float y)
     m_hp = PLAYER_MAX_HP;
     m_invuln = 0.0f;
     m_ability.Reset(m_ability.Type());   // same ability, fresh cooldown
+    m_dashDirX = 1.0f; m_dashDirY = 0.0f;
+}
+
+bool Player::UseAbility()
+{
+    if (!m_ability.TryStart()) return false;
+    if (m_ability.Type() == AbilityType::Dash) { m_dashDirX = m_dirX; m_dashDirY = m_dirY; }
+    return true;
 }
 
 void Player::SetCharacter(CharacterType type)
@@ -91,7 +99,7 @@ void Player::SetCharacter(CharacterType type)
 
 bool Player::TakeHit()
 {
-    if (m_invuln > 0.0f || m_hp <= 0 || m_ability.IsAirborne()) return false;
+    if (m_invuln > 0.0f || m_hp <= 0 || m_ability.IsInvulnerable()) return false;
     --m_hp;
     m_invuln = HIT_INVULN_TIME;
     return true;
@@ -125,6 +133,7 @@ void Player::Move(float dx, float dy, const Map& map)
 void Player::Update(float dt, const Input& input, const Map& map)
 {
     if (m_invuln > 0.0f) m_invuln -= dt;
+    float dashLeft = m_ability.DashTimeLeft();   // before this frame's tick
     m_ability.Update(dt);
 
     // look
@@ -132,6 +141,19 @@ void Player::Update(float dt, const Input& input, const Map& map)
     if (input.IsDown(VK_LEFT))  turn -= TURN_SPEED * dt;
     if (input.IsDown(VK_RIGHT)) turn += TURN_SPEED * dt;
     if (turn != 0.0f) Rotate(turn);
+
+    // Dashing: zip along the locked direction, ignore the movement keys.
+    if (dashLeft > 0.0f)
+    {
+        float step = (dt < dashLeft ? dt : dashLeft) * (DASH_DISTANCE / DASH_TIME);
+        // Small pieces, so a slow frame can't carry you through a wall.
+        int pieces = (int)(step / 0.15f) + 1;
+        for (int i = 0; i < pieces; ++i)
+            Move(m_dashDirX * step / pieces, m_dashDirY * step / pieces, map);
+        m_forwardInput = m_strafeInput = 0.0f;
+        m_sprinting = m_stamina.Update(dt, false);
+        return;
+    }
 
     // which way we want to go
     float forward = 0.0f, strafe = 0.0f;

@@ -16,8 +16,17 @@
 // WORLD (sky, floor, walls)
 // =====================================================
 
+// Light color of the time of day (sunset = warm), applied to the whole world.
+// Set by SetSky. 0xFFFFFF = no tint.
+static int s_tintR = 255, s_tintG = 255, s_tintB = 255;
+
 static inline DWORD Fog(DWORD c, float dist, DWORD haze, float hazeDist)
 {
+    if ((s_tintR & s_tintG & s_tintB) != 255)
+        c = (DWORD)((((c >> 16) & 255) * s_tintR / 255) << 16 |
+            (((c >> 8) & 255) * s_tintG / 255) << 8 |
+            ((c & 255) * s_tintB / 255));
+
     float t = dist / hazeDist;
     if (t > 1.0f) t = 1.0f;
     t = t * t * (3.0f - 2.0f * t);   // smooth
@@ -41,11 +50,30 @@ void Renderer::DrawWorld(DWORD* pixels, const Map& map, const Camera& p)
 {
     const int horizon = SCREEN_H / 2;
 
-    // ----- Sky: dusk gradient -----
-    for (int y = 0; y < horizon; ++y)
+    // ----- Sky: the panorama, looked up by which way each column faces -----
+    // (Fixed to the world, so it slides past like it's very far away.)
+    // Front to back: skyline, clouds (drifting), sky.
     {
-        DWORD c = SkyColor((float)y / horizon, m_night);   // 0 top .. 1 horizon
-        for (int x = 0; x < SCREEN_W; ++x) pixels[y * SCREEN_W + x] = c;
+        const int W = SKY_PANO_W;
+        int cloudShift = (int)m_cloudOffset;
+        for (int x = 0; x < SCREEN_W; ++x)
+        {
+            float camX = 2.0f * x / SCREEN_W - 1.0f;
+            float rx = p.DirX() + p.PlaneX() * camX, ry = p.DirY() + p.PlaneY() * camX;
+            float a = atan2f(ry, rx);                         // -pi .. pi
+            int u = (int)((a + 3.14159265f) * (W / 6.2831853f));
+            if (u >= W) u -= W;
+            int uc = u + cloudShift; uc %= W;
+
+            for (int y = 0; y < horizon; ++y)
+            {
+                int row = y * W;
+                DWORD s = m_skyline[row + u];
+                if (s) { pixels[y * SCREEN_W + x] = s & 0xFFFFFF; continue; }
+                DWORD c = m_skyClouds[row + uc];
+                pixels[y * SCREEN_W + x] = c ? (c & 0xFFFFFF) : m_skyBase[row + u];
+            }
+        }
     }
 
     // ----- Floor: cast row by row -----
@@ -161,6 +189,10 @@ void Renderer::DrawWorld(DWORD* pixels, const Map& map, const Camera& p)
             DWORD c = WallColor(tile, mapX, mapY, wallX, v, door, m_night, edgeL, edgeR);
             pixels[y * SCREEN_W + x] = Fog(Lit(Scale(c, shade), light), fogDist, m_hazeColor, m_hazeDist);
         }
+
+        // ----- Roofs above the walls -----
+        if (map.IsHouse(mapX, mapY))
+            DrawRoofColumn(pixels, x, map, p, rayX, rayY, dist, top);
 
         // ----- Low walls (hedges), far to near, over whatever is behind them -----
         m_lowDepth[x] = 1e9f;
@@ -634,7 +666,7 @@ Camera MakeCamera(const Player& player, const Map& map, bool thirdPerson, float&
 
 void Renderer::DrawSprite(DWORD* pixels, const Camera& p, float worldX, float worldY,
     const Texture& tex, float scale, bool mirror, float fade, float light,
-    float lift)
+    float lift, const SpritePose* pose)
 {
     if (!tex.IsLoaded() || fade <= 0.0f) return;
 
@@ -645,10 +677,14 @@ void Renderer::DrawSprite(DWORD* pixels, const Camera& p, float worldX, float wo
     float ty = invDet * (-p.PlaneY() * sx + p.PlaneX() * sy);
     if (ty < 0.1f) return;
 
+    float stretchX = pose ? pose->stretchX : 1.0f;
+    float stretchY = pose ? pose->stretchY : 1.0f;
+    float lean = pose ? pose->lean : 0.0f;
+
     // Height: a fraction of a wall at that distance. Width keeps the picture's shape.
     int wallH = (int)(SCREEN_H / ty);
-    int height = (int)(wallH * scale);
-    int width = height * tex.VisibleWidth() / tex.VisibleHeight();
+    int height = (int)(wallH * scale * stretchY);
+    int width = (int)(wallH * scale * stretchX * tex.VisibleWidth() / tex.VisibleHeight());
     if (height < 2 || width < 2) return;
 
     int centerX = (int)((SCREEN_W / 2) * (1.0f + tx / ty));
@@ -658,19 +694,22 @@ void Renderer::DrawSprite(DWORD* pixels, const Camera& p, float worldX, float wo
 
     float fogDist = ty * (1.0f - 0.6f * light);
 
-    for (int x = left; x < left + width; ++x)
+    for (int y = top; y < bottom; ++y)
     {
-        if (x < 0 || x >= SCREEN_W) continue;
-        if (ty >= m_depth[x]) continue;   // a wall is in front
+        if (y < 0 || y >= SCREEN_H) continue;
+        float v = (y - top + 0.5f) / height;
 
-        float u = (x - left + 0.5f) / width;
-        if (mirror) u = 1.0f - u;
+        // Lean: the top slides sideways, the feet stay put.
+        int shift = (int)(lean * width * (1.0f - v));
 
-        for (int y = top; y < bottom; ++y)
+        for (int x = left + shift; x < left + shift + width; ++x)
         {
-            if (y < 0 || y >= SCREEN_H) continue;
+            if (x < 0 || x >= SCREEN_W) continue;
+            if (ty >= m_depth[x]) continue;   // a wall is in front
             if (HiddenByHedge(x, y, ty)) continue;
-            float v = (y - top + 0.5f) / height;
+
+            float u = (x - left - shift + 0.5f) / width;
+            if (mirror) u = 1.0f - u;
 
             int alpha;
             DWORD c = tex.Sample(u, v, alpha);
@@ -734,11 +773,111 @@ void Renderer::DrawGlow(DWORD* pixels, const Camera& p, float worldX, float worl
 
 // ----- prop pictures -----
 
-void Renderer::SetNight(bool night)
+void Renderer::DrawRoofColumn(DWORD* pixels, int x, const Map& map, const Camera& p,
+    float rayX, float rayY, float startDist, float wallTop)
 {
-    m_night = night;
-    m_hazeColor = HazeColor(night);
-    m_hazeDist = HazeDistance(night);
+    const int   horizon = SCREEN_H / 2;
+    const float H = (float)SCREEN_H;
+
+    // Everything at or below 'yTop' in this column is already drawn (closer
+    // stuff); only roof rising above it can show. Starts at the wall's top.
+    float yTop = wallTop;
+    if (yTop <= 0.0f) return;
+
+    float t = startDist + 0.001f;
+    float prevT = t, prevY = yTop;      // last sample (for filling rows smoothly)
+    bool  inHouse = false;
+    bool  drewThisHouse = false;
+
+    const float maxDist = m_hazeDist * 1.3f;   // past this it's all haze anyway
+    for (int guard = 0; guard < 2000 && t < maxDist; ++guard)
+    {
+        // Nothing farther than this can poke above yTop, even the tallest roof.
+        float above = horizon - yTop;
+        if (above <= 0.5f) break;
+        if (t > (0.5f + ROOF_MAX_RISE) * H / above) break;
+
+        float wx = p.X() + rayX * t, wy = p.Y() + rayY * t;
+        RoofSample r;
+        if (map.RoofAt(wx, wy, r))
+        {
+            float y = horizon - (0.5f + r.rise) * H / t;   // wall top is 0.5 above the eye
+
+            if (!inHouse) { inHouse = true; drewThisHouse = false; prevT = t; prevY = horizon - 0.5f * H / t; }
+
+            if (y < yTop)
+            {
+                // Fill the new rows. Each row gets its own spot on the roof
+                // (interpolated between the last two samples) so it's smooth.
+                int r0 = (int)y;          if (r0 < 0) r0 = 0;
+                int r1 = (int)yTop;
+                for (int row = r1 - 1; row >= r0; --row)
+                {
+                    float f = (prevY - (row + 0.5f)) / (prevY - y);
+                    if (f < 0.0f) f = 0.0f;
+                    if (f > 1.0f) f = 1.0f;
+                    float tr = prevT + (t - prevT) * f;
+                    RoofSample rs;
+                    if (!map.RoofAt(p.X() + rayX * tr, p.Y() + rayY * tr, rs)) rs = r;
+
+                    float light = m_night ? map.LightAt(p.X() + rayX * tr, p.Y() + rayY * tr) * 0.6f : 0.0f;
+                    pixels[row * SCREEN_W + x] = Fog(Lit(RoofColor(rs), light), tr * (1.0f - 0.6f * light),
+                        m_hazeColor, m_hazeDist);
+                }
+                yTop = y;
+                drewThisHouse = true;
+            }
+            prevT = t; prevY = y;
+            t += 0.02f + t * 0.006f;   // fine steps over a house (coarser far away)
+        }
+        else
+        {
+            // Left a house: outline its top edge against whatever is behind.
+            if (inHouse && drewThisHouse)
+            {
+                int row = (int)yTop;
+                if (row >= 0 && row < SCREEN_H) pixels[row * SCREEN_W + x] = Fog(0x2A1E1A, t, m_hazeColor, m_hazeDist);
+            }
+            inHouse = false;
+
+            int tx = (int)wx, ty = (int)wy;
+            if (map.IsSolid(tx, ty) && !Map::IsLowWall(map.TileAt(tx, ty))) break;   // the fence: end of the world
+            t += 0.2f;   // open ground: hop along
+        }
+    }
+    if (inHouse && drewThisHouse)
+    {
+        int row = (int)yTop;
+        if (row >= 0 && row < SCREEN_H) pixels[row * SCREEN_W + x] = Fog(0x2A1E1A, t, m_hazeColor, m_hazeDist);
+    }
+}
+
+void Renderer::SetSky(TimeOfDay time, unsigned seed)
+{
+    m_night = (time == TimeOfDay::Night);
+
+    SkyLook look = GetSkyLook(time);
+    m_hazeColor = look.haze;
+    m_hazeDist = look.hazeDist;
+    s_tintR = (look.tint >> 16) & 255;
+    s_tintG = (look.tint >> 8) & 255;
+    s_tintB = look.tint & 255;
+
+    PaintSky(time, seed, m_skyBase, m_skyClouds, m_skyline, SKY_PANO_W, SCREEN_H / 2);
+    m_cloudOffset = 0.0f;
+}
+
+void Renderer::AdvanceSky(float dt)
+{
+    m_cloudOffset += CLOUD_DRIFT * dt;
+    if (m_cloudOffset >= SKY_PANO_W) m_cloudOffset -= SKY_PANO_W;
+}
+
+Renderer::~Renderer()
+{
+    delete[] m_skyBase;
+    delete[] m_skyClouds;
+    delete[] m_skyline;
 }
 
 Renderer::Renderer()
@@ -748,7 +887,12 @@ Renderer::Renderer()
     MakeFlowers(m_flowers);
     MakeLamp(m_lampOn, true);
     MakeLamp(m_lampOff, false);
-    SetNight(true);
+
+    const int skySize = SKY_PANO_W * (SCREEN_H / 2);
+    m_skyBase = new DWORD[skySize];
+    m_skyClouds = new DWORD[skySize];
+    m_skyline = new DWORD[skySize];
+    SetSky(TimeOfDay::Noon, 1);
     for (int i = 0; i < SCREEN_W; ++i) { m_depth[i] = 1e9f; m_lowDepth[i] = 1e9f; m_lowTop[i] = SCREEN_H; }
 }
 
@@ -772,4 +916,50 @@ float Renderer::PropScale(int tile) const
     case TILE_LAMP:    return 1.15f;
     default:           return 0.42f;   // bush
     }
+}
+
+
+// =====================================================
+// WALK CYCLE
+// =====================================================
+
+void WalkCycle::Update(float dt, float moved, float stepsPerTile, bool canWalk)
+{
+    bool walking = canWalk && moved > 0.0005f;
+    if (walking) m_phase += moved * stepsPerTile * 3.14159265f;
+
+    // Ease in and out instead of snapping.
+    float target = walking ? 1.0f : 0.0f;
+    float rate = 8.0f * dt;
+    if (m_amount < target) { m_amount += rate; if (m_amount > target) m_amount = target; }
+    else { m_amount -= rate; if (m_amount < target) m_amount = target; }
+
+    if (m_phase > 6283.0f) m_phase -= 6283.1853f;   // keep it small (multiple of 2 pi)
+}
+
+float WalkCycle::Lift() const
+{
+    return fabsf(sinf(m_phase)) * WALK_BOUNCE * m_amount;
+}
+
+SpritePose WalkCycle::Pose() const
+{
+    // s: 0 when a foot hits the ground, 1 at the top of the hop.
+    float s = fabsf(sinf(m_phase));
+    float k = (2.0f * s - 1.0f) * WALK_SQUASH * m_amount;   // -squash .. +stretch
+    SpritePose pose;
+    pose.stretchY = 1.0f + k;
+    pose.stretchX = 1.0f - k * 0.8f;
+    pose.lean = sinf(m_phase) * WALK_LEAN * m_amount;
+    return pose;
+}
+
+int WalkCycle::StepCount() const
+{
+    return (int)(m_phase / 3.14159265f);
+}
+
+bool WalkCycle::OddStep() const
+{
+    return m_amount > 0.3f && ((int)(m_phase / 3.14159265f) & 1);
 }

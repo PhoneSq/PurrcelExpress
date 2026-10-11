@@ -2,6 +2,7 @@
 #include "Game.h"
 #include "Screen.h"
 #include "Config.h"
+#include "Audio.h"
 
 // =====================================================
 // INPUT
@@ -179,6 +180,7 @@ Game::Game()
 Game::~Game()
 {
     m_input.SetMouseLockWanted(false);   // give the cursor back
+    Audio::Get().Shutdown();
 
     delete m_mainMenu;
     delete m_characterSelect;
@@ -232,6 +234,8 @@ bool Game::Init(HWND hwnd)
     m_run = new RunScreen(m_data);
     m_gameOver = new GameOverScreen();
 
+    Audio::Get().Init();   // no sound device = silent, the game still runs
+
     SwitchTo(GameState::MainMenu);
     return true;
 }
@@ -252,6 +256,11 @@ Screen* Game::ScreenFor(GameState state) const
 
 void Game::SwitchTo(GameState next)
 {
+    // Every button that changes the screen clicks. Getting caught already
+    // has the bite sound.
+    bool caught = (m_state == GameState::Run && next == GameState::GameOver);
+    if (!caught && next != GameState::Quit) Audio::Get().Play(Sfx::Click);
+
     m_state = next;
 
     Screen* screen = ScreenFor(next);

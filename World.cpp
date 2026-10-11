@@ -122,6 +122,7 @@ void Map::Generate(int size, Random& rng)
     RemovePockets();
 
     BuildLightMap();
+    BuildRoofs();
 }
 
 void Map::BuildBlock(int bx, int by, Random& rng)
@@ -461,7 +462,17 @@ void RollContracts(Contract* out, Random& rng)
         c.reward = c.difficulty * 100 + rng.Range(0, 10) * 10;
 
         // Express: only with 2+ stops. Pays half the reward extra (rounded to $10).
-        c.night = rng.Chance(NIGHT_CHANCE);
+        // Time of day, by weight.
+        int total = 0;
+        for (int t = 0; t < (int)TimeOfDay::Count; ++t) total += TIME_OF_DAY_WEIGHTS[t];
+        int roll = rng.Range(0, total - 1);
+        c.time = TimeOfDay::Night;
+        for (int t = 0; t < (int)TimeOfDay::Count; ++t)
+        {
+            if (roll < TIME_OF_DAY_WEIGHTS[t]) { c.time = (TimeOfDay)t; break; }
+            roll -= TIME_OF_DAY_WEIGHTS[t];
+        }
+        c.night = c.time == TimeOfDay::Night;
         c.express = c.stops >= 2 && rng.Chance(EXPRESS_CHANCE);
         c.expressBonus = c.express ? ((c.reward / 2 + 5) / 10) * 10 : 0;
     }
@@ -643,4 +654,79 @@ void DeliveryRun::NearestTarget(float px, float py, float& outX, float& outY) co
 int DeliveryRun::Payout() const
 {
     return m_contract.reward + (m_expressEarned ? m_contract.expressBonus : 0);
+}
+
+
+// =====================================================
+// ROOFS
+// =====================================================
+
+void Map::BuildRoofs()
+{
+    const int DX[4] = { -1, 1, 0, 0 }, DY[4] = { 0, 0, -1, 1 };
+    for (int y = 0; y < m_height; ++y)
+        for (int x = 0; x < m_width; ++x)
+            for (int d = 0; d < 4; ++d)
+            {
+                int n = 0;
+                if (IsHouse(x, y))
+                {
+                    // Count same-colored house tiles in this direction (one building).
+                    TileType t = TileAt(x, y);
+                    int cx = x + DX[d], cy = y + DY[d];
+                    while (TileAt(cx, cy) == t && n < 250) { ++n; cx += DX[d]; cy += DY[d]; }
+                }
+                m_roofRun[d][y][x] = (unsigned char)n;
+            }
+}
+
+bool Map::RoofAt(float x, float y, RoofSample& out) const
+{
+    int tx = (int)x, ty = (int)y;
+    if (x < 0.0f || y < 0.0f || !IsHouse(tx, ty)) return false;
+    float fx = x - tx, fy = y - ty;
+    TileType self = TileAt(tx, ty);
+
+    // Distance to the building's edge going west, east, north, south.
+    float best = m_roofRun[0][ty][tx] + fx;  int facet = 0;
+    float second = 1e9f;
+    float d[4] = { best, m_roofRun[1][ty][tx] + 1.0f - fx,
+                   m_roofRun[2][ty][tx] + fy, m_roofRun[3][ty][tx] + 1.0f - fy };
+    for (int i = 1; i < 4; ++i)
+    {
+        if (d[i] < best) { second = best; best = d[i]; facet = i; }
+        else if (d[i] < second) second = d[i];
+    }
+
+    // Inside corners (L-shaped houses): a non-house tile off on a diagonal
+    // can be closer than any straight edge. (Square distance, so the roof
+    // stays flat planes with straight hips and valleys.)
+    for (int oy = -2; oy <= 2; ++oy)
+        for (int ox = -2; ox <= 2; ++ox)
+        {
+            if (ox == 0 || oy == 0) continue;
+            if (TileAt(tx + ox, ty + oy) == self) continue;
+            float ax = (float)(tx + ox), ay = (float)(ty + oy);
+            float dx = ax - x > 0.0f ? ax - x : (x - (ax + 1.0f) > 0.0f ? x - (ax + 1.0f) : 0.0f);
+            float dy = ay - y > 0.0f ? ay - y : (y - (ay + 1.0f) > 0.0f ? y - (ay + 1.0f) : 0.0f);
+            float dist = dx > dy ? dx : dy;
+            int   f = dx > dy ? (ox < 0 ? 0 : 1) : (oy < 0 ? 2 : 3);
+            // The same slope found again isn't a ridge: only a different
+            // facet counts as "second" (that's where the hip / valley lines go).
+            if (dist < best)
+            {
+                if (f != facet) second = best;
+                best = dist; facet = f;
+            }
+            else if (dist < second && f != facet) second = dist;
+        }
+
+    out.edge = best;
+    out.edge2 = second;
+    out.facet = facet;
+    out.along = (facet < 2) ? y : x;
+    out.rise = best * ROOF_SLOPE;
+    if (out.rise > ROOF_MAX_RISE) out.rise = ROOF_MAX_RISE;
+    out.type = self - TILE_HOUSE1;
+    return true;
 }

@@ -2,6 +2,7 @@
 #include "Screen.h"
 #include "Config.h"
 #include "AItexture.h"
+#include "Audio.h"
 
 // =====================================================
 // Shared drawing helpers
@@ -12,6 +13,46 @@ static HFONT MakeFont(int height)
     return CreateFontW(height, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+}
+
+// The rounded font from the menu sign (Baloo 2, free to ship: SIL Open Font
+// License). Loaded privately from the assets folder - nothing gets installed.
+// Without the files, menus fall back to Segoe UI.
+static bool LoadCuteFonts()
+{
+    static int loaded = -1;
+    if (loaded >= 0) return loaded == 1;
+    loaded = 0;
+
+    wchar_t exeDir[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
+    for (int i = lstrlenW(exeDir) - 1; i >= 0; --i)
+        if (exeDir[i] == L'\\' || exeDir[i] == L'/') { exeDir[i + 1] = 0; break; }
+    const wchar_t* prefixes[4] = { L"", exeDir, exeDir, exeDir };
+    const wchar_t* middles[4] = { L"assets\\", L"assets\\", L"..\\assets\\", L"..\\..\\assets\\" };
+    const wchar_t* files[2] = { L"Baloo2-ExtraBold.ttf", L"Baloo2-SemiBold.ttf" };
+
+    int found = 0;
+    for (int f = 0; f < 2; ++f)
+        for (int i = 0; i < 4; ++i)
+        {
+            wchar_t path[MAX_PATH * 2];
+            lstrcpynW(path, prefixes[i], MAX_PATH);
+            lstrcatW(path, middles[i]);
+            lstrcatW(path, files[f]);
+            if (AddFontResourceExW(path, FR_PRIVATE, nullptr) > 0) { ++found; break; }
+        }
+    loaded = (found == 2) ? 1 : 0;
+    return loaded == 1;
+}
+
+// bold = ExtraBold (titles, names), else SemiBold (body text).
+static HFONT MakeCuteFont(int height, bool bold)
+{
+    const wchar_t* face = LoadCuteFonts() ? (bold ? L"Baloo 2 ExtraBold" : L"Baloo 2 SemiBold") : L"Segoe UI";
+    int weight = LoadCuteFonts() ? FW_NORMAL : (bold ? FW_BLACK : FW_SEMIBOLD);
+    return CreateFontW(height, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, face);
 }
 
 static void FillBox(Frame& frame, const RECT& r, DWORD color)
@@ -178,6 +219,12 @@ static void PillDividers(Frame& frame, const RECT& r, int parts)
     }
 }
 
+// Soft tick when the highlighted button / card changes.
+static void TickIfMoved(int before, int after)
+{
+    if (before != after) Audio::Get().Play(Sfx::Click, 0.35f);
+}
+
 static const DWORD UI_BG = 0x0A0A0C;
 static const DWORD UI_GREEN = 0x1E8C1E;
 static const DWORD UI_DARK = 0x161816;
@@ -185,11 +232,298 @@ static const COLORREF TEXT_GREEN = RGB(50, 220, 50);
 
 
 // =====================================================
+// WARM UI: cream paper, rounded cards, wooden signs, paw prints
+// (character select, delivery select, shop)
+// =====================================================
+
+namespace Warm
+{
+    const DWORD BG = 0xFFF2DF;   // cream paper
+    const DWORD BG_PAW = 0xF7E1C4;   // faint paw prints on it
+    const DWORD PAPER = 0xFFFBF3;   // cards
+    const DWORD PAPER_SEL = 0xFFE4B8;   // selected card: honey
+    const DWORD INK = 0x5C3B2A;   // warm brown outlines
+    const DWORD SHADOW = 0xEBCFAC;
+    const DWORD BORDER_SEL = 0xE8803A;   // orange
+    const DWORD WOOD = 0xCF8D4F;
+    const DWORD WOOD_HI = 0xE6AE6A;
+    const DWORD WOOD_GRAIN = 0xAE6E36;
+    const DWORD COIN = 0xF2C230;
+
+    const COLORREF TEXT = RGB(78, 46, 30);
+    const COLORREF TEXT_SOFT = RGB(146, 112, 88);
+    const COLORREF TEXT_FADE = RGB(186, 160, 136);
+    const COLORREF GOLD = RGB(196, 128, 16);
+    const COLORREF ORANGE = RGB(222, 112, 46);
+    const COLORREF RED = RGB(214, 70, 60);
+    const COLORREF GREEN = RGB(70, 150, 70);
+    const COLORREF WHITE = RGB(255, 252, 245);
+}
+
+static void Plot(Frame& f, int x, int y, DWORD c)
+{
+    if (x >= 0 && y >= 0 && x < f.width && y < f.height) f.pixels[y * f.width + x] = c;
+}
+
+// Signed distance to a rounded rectangle's edge (negative = inside).
+static float RoundDist(const RECT& r, float rad, float px, float py)
+{
+    float cx = (r.left + r.right) * 0.5f, cy = (r.top + r.bottom) * 0.5f;
+    float hx = (r.right - r.left) * 0.5f - rad, hy = (r.bottom - r.top) * 0.5f - rad;
+    float dx = fabsf(px - cx) - hx, dy = fabsf(py - cy) - hy;
+    float ox = dx > 0 ? dx : 0, oy = dy > 0 ? dy : 0;
+    float inside = dx > dy ? dx : dy;
+    return sqrtf(ox * ox + oy * oy) + (inside < 0 ? inside : 0) - rad;
+}
+
+// Rounded card with a soft drop shadow and an ink outline.
+static void DrawCard(Frame& f, RECT r, int radius, DWORD fill, DWORD border, float borderW, int shadow)
+{
+    if (shadow > 0)
+    {
+        RECT s = r; OffsetRect(&s, 0, shadow);
+        for (int y = s.top; y < s.bottom; ++y)
+            for (int x = s.left; x < s.right; ++x)
+                if (RoundDist(s, (float)radius, x + 0.5f, y + 0.5f) < 0) Plot(f, x, y, Warm::SHADOW);
+    }
+    for (int y = r.top; y < r.bottom; ++y)
+        for (int x = r.left; x < r.right; ++x)
+        {
+            float d = RoundDist(r, (float)radius, x + 0.5f, y + 0.5f);
+            if (d >= 0) continue;
+            Plot(f, x, y, d > -borderW ? border : fill);
+        }
+}
+
+// Wooden sign / button: a card in wood, with grain lines.
+static void DrawWood(Frame& f, RECT r, bool highlight)
+{
+    DrawCard(f, r, 7, highlight ? Warm::WOOD_HI : Warm::WOOD, Warm::INK, 2.0f, 3);
+    int h = r.bottom - r.top;
+    for (int k = 1; k <= 2; ++k)
+    {
+        int y = (k == 1) ? r.top + 5 : r.bottom - 6;   // along the edges, clear of the text
+        (void)h;
+        int x0 = r.left + 8 + k * 9, x1 = r.right - 10 - k * 13;
+        for (int x = x0; x < x1; ++x)
+            if (((x * 13 + k * 5) % 23) > 3)
+                Plot(f, x, y + ((x / 17) % 2), highlight ? Warm::WOOD : Warm::WOOD_GRAIN);
+    }
+}
+
+// A little paw print. size ~ pad width in pixels.
+static void DrawPawPrint(Frame& f, int cx, int cy, float size, DWORD color)
+{
+    struct Blob { float x, y, rx, ry; };
+    const Blob b[5] = { { 0, 0.28f, 0.50f, 0.40f }, { -0.55f, -0.30f, 0.20f, 0.25f }, { -0.20f, -0.58f, 0.20f, 0.25f },
+                        { 0.20f, -0.58f, 0.20f, 0.25f }, { 0.55f, -0.30f, 0.20f, 0.25f } };
+    for (int i = 0; i < 5; ++i)
+    {
+        float bx = cx + b[i].x * size, by = cy + b[i].y * size, rx = b[i].rx * size, ry = b[i].ry * size;
+        for (int y = (int)(by - ry) - 1; y <= (int)(by + ry) + 1; ++y)
+            for (int x = (int)(bx - rx) - 1; x <= (int)(bx + rx) + 1; ++x)
+            {
+                float dx = (x + 0.5f - bx) / rx, dy = (y + 0.5f - by) / ry;
+                if (dx * dx + dy * dy <= 1.0f) Plot(f, x, y, color);
+            }
+    }
+}
+
+// Cream paper with faint, slightly tilted rows of paw prints (made once).
+static void DrawWarmBackground(Frame& f)
+{
+    static DWORD cache[SCREEN_W * SCREEN_H];
+    static bool  made = false;
+    if (!made)
+    {
+        Frame c = f; c.pixels = cache;
+        for (int i = 0; i < SCREEN_W * SCREEN_H; ++i) cache[i] = Warm::BG;
+        for (int row = 0; row < 9; ++row)
+            for (int col = 0; col < 12; ++col)
+            {
+                int x = col * 58 + (row % 2) * 29 + 10, y = row * 50 + 12;
+                DrawPawPrint(c, x, y + (col % 2) * 6, 11.0f, Warm::BG_PAW);
+            }
+        made = true;
+    }
+    for (int i = 0; i < f.width * f.height; ++i) f.pixels[i] = cache[i];
+}
+
+// A gold coin (for money).
+static void DrawCoin(Frame& f, int cx, int cy, int r)
+{
+    for (int y = cy - r; y <= cy + r; ++y)
+        for (int x = cx - r; x <= cx + r; ++x)
+        {
+            float d = sqrtf((float)((x - cx) * (x - cx) + (y - cy) * (y - cy)));
+            if (d > r) continue;
+            DWORD c = (d > r - 1.5f) ? Warm::INK : ((d < r * 0.55f && x < cx && y < cy) ? 0xFFE58A : Warm::COIN);
+            Plot(f, x, y, c);
+        }
+}
+
+// Text width in pixels with the font currently selected in dc.
+static int TextWidth(HDC dc, const wchar_t* text)
+{
+    SIZE sz = { 0, 0 };
+    GetTextExtentPoint32W(dc, text, lstrlenW(text), &sz);
+    return (int)sz.cx;
+}
+
+// Rounded colored tag with text ("EXPRESS +$160", "SUNSET").
+// Draws the pill now; the text goes on in the text pass (see DrawTagText).
+static RECT DrawTagPill(Frame& f, HDC dc, HFONT font, const wchar_t* text, int x, int y, DWORD color)
+{
+    HGDIOBJ old = SelectObject(dc, font);
+    int w = TextWidth(dc, text) + 14;
+    SelectObject(dc, old);
+    RECT r = { x, y, x + w, y + 16 };
+    DrawCard(f, r, 8, color, Warm::INK, 1.5f, 0);
+    return r;
+}
+
+static void DrawTagText(HDC dc, HFONT font, const wchar_t* text, const RECT& r, COLORREF color)
+{
+    HGDIOBJ old = SelectObject(dc, font);
+    RECT t = r; OffsetRect(&t, 0, 1);
+    SetTextColor(dc, color);
+    DrawTextW(dc, text, -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, old);
+}
+
+// Title on a wooden sign at the top of a screen.
+static void DrawTitleSign(Frame& f, HDC dc, HFONT font, const wchar_t* text)
+{
+    HGDIOBJ old = SelectObject(dc, font);
+    int w = TextWidth(dc, text) + 48;
+    SelectObject(dc, old);
+    RECT r = { (f.width - w) / 2, 10, (f.width + w) / 2, 48 };
+    DrawWood(f, r, false);
+    DrawPawPrint(f, r.left + 14, r.top + 20, 8.0f, Warm::WOOD_GRAIN);
+    DrawPawPrint(f, r.right - 14, r.top + 20, 8.0f, Warm::WOOD_GRAIN);
+    old = SelectObject(dc, font);
+    SetTextColor(dc, Warm::TEXT);
+    RECT t = r; OffsetRect(&t, 0, 1);
+    DrawTextW(dc, text, -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, old);
+}
+
+// Money in a little pill with a coin, top right.
+static void DrawMoneyPill(Frame& f, HDC dc, HFONT font, int money)
+{
+    wchar_t buf[32];
+    wsprintfW(buf, L"$%d", money);
+    HGDIOBJ old = SelectObject(dc, font);
+    int w = TextWidth(dc, buf) + 40;
+    SelectObject(dc, old);
+    RECT r = { f.width - 20 - w, 15, f.width - 20, 43 };
+    DrawCard(f, r, 14, Warm::PAPER, Warm::INK, 2.0f, 3);
+    DrawCoin(f, r.left + 15, (r.top + r.bottom) / 2, 8);
+    old = SelectObject(dc, font);
+    SetTextColor(dc, Warm::GOLD);
+    RECT t = r; t.left += 26; OffsetRect(&t, 0, 1);
+    DrawTextW(dc, buf, -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, old);
+}
+
+// Pill colors for the times of day.
+static DWORD TimeColor(TimeOfDay t)
+{
+    switch (t)
+    {
+    case TimeOfDay::Morning: return 0xF4AE90;
+    case TimeOfDay::Noon:    return 0xF2CC4A;
+    case TimeOfDay::Sunset:  return 0xF08A4C;
+    default:                 return 0x7A6CC8;
+    }
+}
+
+static const DWORD DIFFICULTY_COLORS[5] = { 0x7CC46A, 0xB4CC50, 0xF0B83A, 0xF08A4C, 0xE05A4A };
+
+
+// =====================================================
+// HALF PICTURE
+// =====================================================
+
+bool HalfPicture::Load(const wchar_t* fileName)
+{
+    Free();
+    Texture full;
+    if (!full.Load(fileName)) return false;
+
+    // Texture trims fully transparent edges; work on the visible part.
+    int sw = full.VisibleWidth(), sh = full.VisibleHeight();
+    m_w = sw / 2;
+    m_h = sh / 2;
+    if (m_w < 1 || m_h < 1) return false;
+    m_pixels = new DWORD[m_w * m_h];
+    m_alpha = new unsigned char[m_w * m_h];
+
+    for (int y = 0; y < m_h; ++y)
+        for (int x = 0; x < m_w; ++x)
+        {
+            // Average the 2x2 source pixels (weighted by how see-through they are).
+            int r = 0, g = 0, b = 0, aSum = 0;
+            for (int j = 0; j < 2; ++j)
+                for (int i = 0; i < 2; ++i)
+                {
+                    int a;
+                    DWORD c = full.Sample((2 * x + i + 0.5f) / sw, (2 * y + j + 0.5f) / sh, a);
+                    r += ((c >> 16) & 255) * a; g += ((c >> 8) & 255) * a; b += (c & 255) * a;
+                    aSum += a;
+                }
+            int k = y * m_w + x;
+            m_alpha[k] = (unsigned char)(aSum / 4);
+            m_pixels[k] = aSum ? (DWORD)((r / aSum) << 16 | (g / aSum) << 8 | (b / aSum)) : 0;
+        }
+    return true;
+}
+
+void HalfPicture::Draw(Frame& frame, int x0, int y0) const
+{
+    if (!m_pixels) return;
+    for (int y = 0; y < m_h; ++y)
+    {
+        int sy = y0 + y;
+        if (sy < 0 || sy >= frame.height) continue;
+        for (int x = 0; x < m_w; ++x)
+        {
+            int sx = x0 + x;
+            if (sx < 0 || sx >= frame.width) continue;
+            int k = y * m_w + x, a = m_alpha[k];
+            if (a == 0) continue;
+            DWORD& d = frame.pixels[sy * frame.width + sx];
+            if (a >= 250) { d = m_pixels[k]; continue; }
+            DWORD c = m_pixels[k];
+            int dr = (d >> 16) & 255, dg = (d >> 8) & 255, db = d & 255;
+            dr += ((((int)(c >> 16) & 255) - dr) * a) / 255;
+            dg += ((((int)(c >> 8) & 255) - dg) * a) / 255;
+            db += ((((int)c & 255) - db) * a) / 255;
+            d = (DWORD)(dr << 16 | dg << 8 | db);
+        }
+    }
+}
+
+void HalfPicture::Free()
+{
+    delete[] m_pixels;
+    delete[] m_alpha;
+    m_pixels = nullptr;
+    m_alpha = nullptr;
+    m_w = m_h = 0;
+}
+
+
+// =====================================================
 // MAIN MENU
 // =====================================================
 
+// Where the buttons sit on the menu art (640x400, the wooden planks on the right).
+static const int MENU_BUTTON_X = 457;
+static const int MENU_BUTTON_Y[] = { 308, 353 };
+
 MainMenuScreen::MainMenuScreen()
-    : m_selected(0), m_lastMouseX(-1), m_lastMouseY(-1)
+    : m_selected(0), m_lastMouseX(-1), m_lastMouseY(-1), m_hasArt(false)
 {
     const int w = 200, h = 44;
     const int left = (SCREEN_W - w) / 2;
@@ -205,6 +539,22 @@ MainMenuScreen::MainMenuScreen()
 
     m_labels[0] = L"PLAY";  m_targets[0] = GameState::CharacterSelect;
     m_labels[1] = L"EXIT";  m_targets[1] = GameState::Quit;
+
+    // Menu art, if it's in the assets folder: all of it, or the old look.
+    m_hasArt = m_background.Load(L"MenuBG.png") &&
+        m_buttonArt[0][0].Load(L"ButtonPlay.png") && m_buttonArt[0][1].Load(L"ButtonPlayHover.png") &&
+        m_buttonArt[1][0].Load(L"ButtonExit.png") && m_buttonArt[1][1].Load(L"ButtonExitHover.png");
+    if (m_hasArt)
+    {
+        // Buttons become the wooden planks (their hit boxes follow the pictures).
+        for (int i = 0; i < BUTTON_COUNT; ++i)
+        {
+            m_buttons[i].left = MENU_BUTTON_X;
+            m_buttons[i].top = MENU_BUTTON_Y[i];
+            m_buttons[i].right = MENU_BUTTON_X + m_buttonArt[i][0].Width();
+            m_buttons[i].bottom = MENU_BUTTON_Y[i] + m_buttonArt[i][0].Height();
+        }
+    }
 
     m_titleFont = MakeFont(56);
     m_buttonFont = MakeFont(26);
@@ -235,6 +585,7 @@ int MainMenuScreen::HitTest(int x, int y) const
 
 GameState MainMenuScreen::Update(float, const Input& input)
 {
+    int before = m_selected;
     // Mouse: hover selects (only when it actually moves), click activates.
     int mx = input.MouseX(), my = input.MouseY();
     int hover = HitTest(mx, my);
@@ -252,6 +603,7 @@ GameState MainMenuScreen::Update(float, const Input& input)
         m_selected = (m_selected + BUTTON_COUNT - 1) % BUTTON_COUNT;
     if (input.WasPressed(VK_DOWN) || input.WasPressed('S'))
         m_selected = (m_selected + 1) % BUTTON_COUNT;
+    TickIfMoved(before, m_selected);
 
     if (input.WasPressed(VK_RETURN) || input.WasPressed(VK_SPACE))
         return m_targets[m_selected];
@@ -264,6 +616,19 @@ GameState MainMenuScreen::Update(float, const Input& input)
 
 void MainMenuScreen::Render(Frame& frame)
 {
+    if (m_hasArt)
+    {
+        m_background.Draw(frame, 0, 0);
+        for (int i = 0; i < BUTTON_COUNT; ++i)
+        {
+            const HalfPicture& pic = m_buttonArt[i][i == m_selected ? 1 : 0];
+            // The highlighted plank pops out a little.
+            int lift = (i == m_selected) ? -2 : 0;
+            pic.Draw(frame, m_buttons[i].left + lift, m_buttons[i].top + lift);
+        }
+        return;
+    }
+
     for (int i = 0; i < frame.width * frame.height; ++i) frame.pixels[i] = UI_BG;
 
     for (int i = 0; i < BUTTON_COUNT; ++i)
@@ -299,9 +664,9 @@ void MainMenuScreen::Render(Frame& frame)
 CharacterSelectScreen::CharacterSelectScreen(GameData& data)
     : m_data(data), m_selected(0), m_lastMouseX(-1), m_lastMouseY(-1)
 {
-    m_titleFont = MakeFont(26);
-    m_nameFont = MakeFont(17);
-    m_textFont = MakeFont(13);
+    m_titleFont = MakeCuteFont(26, true);
+    m_nameFont = MakeCuteFont(18, true);
+    m_textFont = MakeCuteFont(14, false);
 
     for (int i = 0; i < COUNT; ++i)
         m_portraits[i].Load(GetCharacterInfo((CharacterType)i).spriteSide);
@@ -324,7 +689,7 @@ void CharacterSelectScreen::Enter()
 
 RECT CharacterSelectScreen::CardRect(int index) const
 {
-    const int gap = 24, top = 62, h = 290;
+    const int gap = 22, top = 66, h = 282;
     int w = (SCREEN_W - 60 - (COUNT - 1) * gap) / COUNT;
     int left = (SCREEN_W - (COUNT * w + (COUNT - 1) * gap)) / 2 + index * (w + gap);
     RECT r = { left, top, left + w, top + h };
@@ -343,6 +708,7 @@ int CharacterSelectScreen::HitTest(int x, int y) const
 
 GameState CharacterSelectScreen::Update(float, const Input& input)
 {
+    int before = m_selected;
     int mx = input.MouseX(), my = input.MouseY();
     int hover = HitTest(mx, my);
     if ((mx != m_lastMouseX || my != m_lastMouseY) && m_lastMouseX != -1 && hover >= 0)
@@ -354,6 +720,7 @@ GameState CharacterSelectScreen::Update(float, const Input& input)
         m_selected = (m_selected + COUNT - 1) % COUNT;
     if (input.WasPressed(VK_RIGHT) || input.WasPressed('D'))
         m_selected = (m_selected + 1) % COUNT;
+    TickIfMoved(before, m_selected);
 
     bool click = input.WasPressed(VK_LBUTTON) && hover >= 0;
     if (click) m_selected = hover;
@@ -369,63 +736,65 @@ GameState CharacterSelectScreen::Update(float, const Input& input)
 
 void CharacterSelectScreen::Render(Frame& frame)
 {
-    for (int i = 0; i < frame.width * frame.height; ++i) frame.pixels[i] = UI_BG;
-
-    for (int i = 0; i < COUNT; ++i)
-    {
-        RECT r = CardRect(i);
-        bool sel = (i == m_selected);
-        const CharacterInfo& info = GetCharacterInfo((CharacterType)i);
-
-        FillBox(frame, r, sel ? 0x0A3C0A : UI_DARK);
-        OutlineBox(frame, r, sel ? 0x32DC32 : 0x2A4A2A);
-
-        // The cat, side view, on a cream backdrop.
-        RECT pic = { r.left + 10, r.top + 10, r.right - 10, r.top + 130 };
-        FillBox(frame, pic, sel ? 0xFFF6E6 : 0xC9BCA8);
-        DrawIcon(frame, m_portraits[i], pic.left + 6, pic.top + 6,
-            pic.right - pic.left - 12, pic.bottom - pic.top - 12);
-
-        // Ability icon next to the ability name.
-        DrawIcon(frame, m_abilityIcons[(int)info.ability], r.left + 12, r.top + 166, 28, 14);
-    }
-
     HDC dc = frame.dc;
     SetBkMode(dc, TRANSPARENT);
-    HGDIOBJ oldFont = SelectObject(dc, m_titleFont);
-    wchar_t buf[96];
+    DrawWarmBackground(frame);
 
-    RECT title = { 0, 16, frame.width, 50 };
-    PlainText(dc, L"CHOOSE YOUR CAT", title, DT_CENTER | DT_SINGLELINE, TEXT_GREEN);
+    // Soft backdrop color behind each cat's picture.
+    static const DWORD BACKDROPS[3] = { 0xFFE2BE, 0xE2DDEE, 0xD8EFE8 };
 
     for (int i = 0; i < COUNT; ++i)
     {
         RECT r = CardRect(i);
         bool sel = (i == m_selected);
+        if (sel) OffsetRect(&r, 0, -4);   // the picked card lifts up
+        const CharacterInfo& info = GetCharacterInfo((CharacterType)i);
+
+        DrawCard(frame, r, 12, sel ? Warm::PAPER_SEL : Warm::PAPER, sel ? Warm::BORDER_SEL : Warm::INK, sel ? 3.0f : 2.0f, sel ? 6 : 3);
+
+        RECT pic = { r.left + 10, r.top + 10, r.right - 10, r.top + 128 };
+        DrawCard(frame, pic, 10, BACKDROPS[i % 3], Warm::INK, 1.5f, 0);
+        DrawPawPrint(frame, pic.right - 16, pic.top + 16, 9.0f, 0xFFFFFF);
+        DrawIcon(frame, m_portraits[i], pic.left + 6, pic.top + 8, pic.right - pic.left - 12, pic.bottom - pic.top - 14);
+
+        // Ability icon in a little circle.
+        RECT ic = { r.left + 10, r.top + 164, r.left + 36, r.top + 190 };
+        DrawCard(frame, ic, 13, Warm::WHITE, Warm::INK, 1.5f, 0);
+        DrawIcon(frame, m_abilityIcons[(int)info.ability], ic.left + 4, ic.top + 4, 18, 18);
+    }
+
+    DrawTitleSign(frame, dc, m_titleFont, L"Choose Your Cat");
+
+    HGDIOBJ oldFont = SelectObject(dc, m_nameFont);
+    wchar_t buf[96];
+    for (int i = 0; i < COUNT; ++i)
+    {
+        RECT r = CardRect(i);
+        bool sel = (i == m_selected);
+        if (sel) OffsetRect(&r, 0, -4);
         const CharacterInfo& info = GetCharacterInfo((CharacterType)i);
         const AbilityInfo& ab = GetAbilityInfo(info.ability);
 
         SelectObject(dc, m_nameFont);
-        RECT name = { r.left, r.top + 138, r.right, r.top + 158 };
-        PlainText(dc, info.name, name, DT_CENTER | DT_SINGLELINE, sel ? RGB(255, 255, 255) : RGB(180, 180, 180));
+        RECT name = { r.left, r.top + 132, r.right, r.top + 158 };
+        PlainText(dc, info.name, name, DT_CENTER | DT_VCENTER | DT_SINGLELINE, Warm::TEXT);
 
         SelectObject(dc, m_textFont);
-        RECT abName = { r.left + 46, r.top + 165, r.right - 6, r.top + 181 };
+        RECT abName = { r.left + 42, r.top + 166, r.right - 6, r.top + 188 };
         wsprintfW(buf, L"%s (E)", ab.name);
-        PlainText(dc, buf, abName, DT_LEFT | DT_SINGLELINE, RGB(255, 220, 0));
+        PlainText(dc, buf, abName, DT_LEFT | DT_VCENTER | DT_SINGLELINE, Warm::ORANGE);
 
-        RECT desc = { r.left + 10, r.top + 190, r.right - 10, r.bottom - 26 };
-        PlainText(dc, ab.description, desc, DT_LEFT | DT_WORDBREAK, RGB(170, 200, 170));
+        RECT desc = { r.left + 12, r.top + 194, r.right - 10, r.bottom - 28 };
+        PlainText(dc, ab.description, desc, DT_LEFT | DT_WORDBREAK, Warm::TEXT_SOFT);
 
-        RECT cd = { r.left + 10, r.bottom - 22, r.right - 10, r.bottom - 6 };
-        wsprintfW(buf, L"Cooldown: %ds", (int)(ab.cooldown + 0.5f));
-        PlainText(dc, buf, cd, DT_LEFT | DT_SINGLELINE, RGB(120, 140, 120));
+        RECT cd = { r.left + 12, r.bottom - 26, r.right - 10, r.bottom - 8 };
+        wsprintfW(buf, L"Cooldown %ds", (int)(ab.cooldown + 0.5f));
+        PlainText(dc, buf, cd, DT_LEFT | DT_VCENTER | DT_SINGLELINE, Warm::TEXT_FADE);
     }
 
-    RECT hint = { 0, 372, frame.width, 390 };
-    PlainText(dc, L"LEFT/RIGHT: select     ENTER / CLICK: choose     ESC: back", hint,
-        DT_CENTER | DT_SINGLELINE, RGB(110, 110, 110));
-
+    RECT hint = { 0, 368, frame.width, 392 };
+    PlainText(dc, L"LEFT / RIGHT  pick     ENTER / CLICK  choose     ESC  back", hint,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE, Warm::TEXT_SOFT);
     SelectObject(dc, oldFont);
 }
 
@@ -437,13 +806,13 @@ void CharacterSelectScreen::Render(Frame& frame)
 DeliverySelectScreen::DeliverySelectScreen(GameData& data)
     : m_data(data), m_selected(0), m_lastMouseX(-1), m_lastMouseY(-1)
 {
-    m_titleFont = MakeFont(26);
-    m_nameFont = MakeFont(17);
-    m_textFont = MakeFont(13);
+    m_titleFont = MakeCuteFont(26, true);
+    m_nameFont = MakeCuteFont(18, true);
+    m_textFont = MakeCuteFont(14, false);
     RollContracts(m_contracts, m_data.rng);
     m_data.newContracts = false;
 
-    m_shopButton = { 40, 18, 140, 46 };
+    m_shopButton = { 20, 14, 122, 44 };
 }
 
 DeliverySelectScreen::~DeliverySelectScreen()
@@ -468,8 +837,8 @@ void DeliverySelectScreen::Enter()
 
 RECT DeliverySelectScreen::RowRect(int index) const
 {
-    const int left = 40, width = SCREEN_W - 80;
-    const int top = 62, height = 52, gap = 6;
+    const int left = 30, width = SCREEN_W - 60;
+    const int top = 60, height = 50, gap = 6;
     RECT r = { left, top + index * (height + gap), left + width, top + index * (height + gap) + height };
     return r;
 }
@@ -488,6 +857,7 @@ int DeliverySelectScreen::HitTest(int x, int y) const
 
 GameState DeliverySelectScreen::Update(float, const Input& input)
 {
+    int before = m_selected;
     int mx = input.MouseX(), my = input.MouseY();
     int hit = HitTest(mx, my);
 
@@ -513,6 +883,7 @@ GameState DeliverySelectScreen::Update(float, const Input& input)
         m_selected = (m_selected + DELIVERY_CHOICES - 1) % DELIVERY_CHOICES;
     if (input.WasPressed(VK_DOWN) || input.WasPressed('S'))
         m_selected = (m_selected + 1) % DELIVERY_CHOICES;
+    TickIfMoved(before, m_selected);
 
     if (input.WasPressed(VK_ESCAPE)) return GameState::MainMenu;
 
@@ -521,42 +892,52 @@ GameState DeliverySelectScreen::Update(float, const Input& input)
 
 void DeliverySelectScreen::Render(Frame& frame)
 {
-    for (int i = 0; i < frame.width * frame.height; ++i) frame.pixels[i] = UI_BG;
+    HDC dc = frame.dc;
+    SetBkMode(dc, TRANSPARENT);
+    DrawWarmBackground(frame);
 
-    // Rows (pixels first, text after)
+    static const wchar_t* const TIME_NAMES[4] = { L"MORNING", L"NOON", L"SUNSET", L"NIGHT" };
+    wchar_t buf[128];
+    RECT expressTag[DELIVERY_CHOICES], timeTag[DELIVERY_CHOICES];
+
+    // ----- pixels: cards, pills, paws -----
     for (int i = 0; i < DELIVERY_CHOICES; ++i)
     {
         RECT r = RowRect(i);
         bool sel = (i == m_selected);
-        FillBox(frame, r, sel ? 0x0A3C0A : UI_DARK);
-        if (sel) OutlineBox(frame, r, 0x32DC32);
-
-        // Difficulty pips on the right of the second line: green -> red.
-        static const DWORD PIP_COLORS[5] = { 0x32C832, 0x96D232, 0xE6C828, 0xE67828, 0xE63232 };
         const Contract& c = m_contracts[i];
+
+        DrawCard(frame, r, 10, sel ? Warm::PAPER_SEL : Warm::PAPER, sel ? Warm::BORDER_SEL : Warm::INK, sel ? 3.0f : 2.0f, 3);
+        if (sel) DrawPawPrint(frame, r.left + 15, r.top + 18, 10.0f, Warm::BORDER_SEL);
+
+        // Difficulty: paw prints under the reward, colored green -> red.
         for (int p = 0; p < 5; ++p)
+            DrawPawPrint(frame, r.right - 90 + p * 16, r.bottom - 14, 7.0f,
+                p < c.difficulty ? DIFFICULTY_COLORS[c.difficulty - 1] : 0xE8D8C4);
+
+        // Little icons for stops (box) and dogs (paw).
+        RECT boxIcon = { r.left + 36, r.top + 31, r.left + 46, r.top + 40 };
+        DrawCard(frame, boxIcon, 2, 0xDE9C5A, Warm::INK, 1.0f, 0);
+        DrawPawPrint(frame, r.left + 120, r.top + 37, 7.0f, 0x9A7A62);
+
+        timeTag[i] = DrawTagPill(frame, dc, m_textFont, TIME_NAMES[(int)c.time], r.left + 200, r.top + 28, TimeColor(c.time));
+        if (c.express)
         {
-            RECT pip = { r.right - 12 - (5 - p) * 12, r.top + 32, r.right - 12 - (5 - p) * 12 + 8, r.top + 40 };
-            FillBox(frame, pip, p < c.difficulty ? PIP_COLORS[c.difficulty - 1] : 0x3C3C3C);
+            wsprintfW(buf, L"EXPRESS +$%d", c.expressBonus);
+            expressTag[i] = DrawTagPill(frame, dc, m_textFont, buf, r.right - 248, r.top + 8, 0x46BCC8);
         }
+        DrawCoin(frame, r.right - 88, r.top + 17, 7);
     }
 
     bool shopHover = HitTest(m_lastMouseX, m_lastMouseY) == SHOP_BUTTON;
-    FillBox(frame, m_shopButton, shopHover ? 0x0A3C0A : UI_DARK);
-    OutlineBox(frame, m_shopButton, UI_GREEN);
+    DrawWood(frame, m_shopButton, shopHover);
 
-    HDC dc = frame.dc;
-    SetBkMode(dc, TRANSPARENT);
-    HGDIOBJ oldFont = SelectObject(dc, m_titleFont);
+    // ----- text -----
+    DrawTitleSign(frame, dc, m_titleFont, L"Pick a Delivery");
+    DrawMoneyPill(frame, dc, m_nameFont, m_data.money);
 
-    RECT title = { 0, 16, frame.width, 50 };
-    PlainText(dc, L"SELECT DELIVERY", title, DT_CENTER | DT_SINGLELINE, TEXT_GREEN);
-
-    SelectObject(dc, m_nameFont);
-    wchar_t buf[128];
-    wsprintfW(buf, L"$%d", m_data.money);
-    RECT money = { 0, 22, frame.width - 40, 50 };
-    PlainText(dc, buf, money, DT_RIGHT | DT_SINGLELINE, RGB(255, 220, 0));
+    HGDIOBJ oldFont = SelectObject(dc, m_nameFont);
+    PlainText(dc, L"Shop (B)", m_shopButton, DT_CENTER | DT_VCENTER | DT_SINGLELINE, Warm::TEXT);
 
     for (int i = 0; i < DELIVERY_CHOICES; ++i)
     {
@@ -565,48 +946,42 @@ void DeliverySelectScreen::Render(Frame& frame)
         bool sel = (i == m_selected);
 
         SelectObject(dc, m_nameFont);
-        RECT name = { r.left + 12, r.top + 6, r.right - 12, r.top + 26 };
-        wsprintfW(buf, L"%s%s", sel ? L"> " : L"  ", c.client);
-        PlainText(dc, buf, name, DT_LEFT | DT_SINGLELINE, sel ? RGB(255, 255, 255) : RGB(170, 170, 170));
+        RECT name = { r.left + 32, r.top + 3, r.right - 12, r.top + 27 };
+        PlainText(dc, c.client, name, DT_LEFT | DT_VCENTER | DT_SINGLELINE, sel ? Warm::TEXT : Warm::TEXT_SOFT);
 
-        // Pay on the right of the first line, express bonus before it.
         wsprintfW(buf, L"$%d", c.reward);
-        PlainText(dc, buf, name, DT_RIGHT | DT_SINGLELINE, RGB(255, 220, 0));
-        if (c.express)
-        {
-            RECT ex = name;
-            ex.right -= 70;
-            wsprintfW(buf, L"EXPRESS +$%d", c.expressBonus);
-            PlainText(dc, buf, ex, DT_RIGHT | DT_SINGLELINE, RGB(0, 230, 255));
-        }
+        RECT pay = { r.right - 74, r.top + 3, r.right - 12, r.top + 29 };
+        PlainText(dc, buf, pay, DT_LEFT | DT_VCENTER | DT_SINGLELINE, Warm::GOLD);
 
         SelectObject(dc, m_textFont);
-        RECT detail = { r.left + 28, r.top + 30, r.right - 80, r.bottom };
-        wsprintfW(buf, L"Stops: %d     Dogs: %d", c.stops, c.enemies);
-        PlainText(dc, buf, detail, DT_LEFT | DT_SINGLELINE, sel ? RGB(200, 255, 200) : RGB(120, 120, 120));
+        wsprintfW(buf, L"%d stop%s", c.stops, c.stops == 1 ? L"" : L"s");
+        RECT stops = { r.left + 51, r.top + 27, r.left + 115, r.top + 45 };
+        PlainText(dc, buf, stops, DT_LEFT | DT_VCENTER | DT_SINGLELINE, Warm::TEXT_SOFT);
+        wsprintfW(buf, L"%d dogs", c.enemies);
+        RECT dogs = { r.left + 131, r.top + 27, r.left + 195, r.top + 45 };
+        PlainText(dc, buf, dogs, DT_LEFT | DT_VCENTER | DT_SINGLELINE, Warm::TEXT_SOFT);
 
-        RECT when = detail;
-        when.left += 200;
-        PlainText(dc, c.night ? L"NIGHT" : L"DAY", when, DT_LEFT | DT_SINGLELINE,
-            c.night ? RGB(170, 150, 255) : RGB(255, 210, 110));
+        DrawTagText(dc, m_textFont, TIME_NAMES[(int)c.time], timeTag[i],
+            c.time == TimeOfDay::Noon ? Warm::TEXT : Warm::WHITE);
+        if (c.express)
+        {
+            wsprintfW(buf, L"EXPRESS +$%d", c.expressBonus);
+            DrawTagText(dc, m_textFont, buf, expressTag[i], Warm::WHITE);
+        }
     }
 
-    SelectObject(dc, m_nameFont);
-    PlainText(dc, L"SHOP (B)", m_shopButton, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXT_GREEN);
-
     SelectObject(dc, m_textFont);
-    RECT carry = { 0, 352, frame.width, 368 };
+    RECT carry = { 0, 344, frame.width, 364 };
     if (m_data.heldItem != ItemType::None)
-        wsprintfW(buf, L"Carrying: %s  (press Q during a delivery to use it)", GetItemInfo(m_data.heldItem).name);
+        wsprintfW(buf, L"Carrying: %s  (press Q during a delivery)", GetItemInfo(m_data.heldItem).name);
     else
-        lstrcpyW(buf, L"Not carrying an item");
-    PlainText(dc, buf, carry, DT_CENTER | DT_SINGLELINE,
-        m_data.heldItem != ItemType::None ? RGB(255, 220, 0) : RGB(90, 90, 90));
+        lstrcpyW(buf, L"Not carrying an item - visit the shop!");
+    PlainText(dc, buf, carry, DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        m_data.heldItem != ItemType::None ? Warm::ORANGE : Warm::TEXT_FADE);
 
-    RECT hint = { 0, 372, frame.width, 390 };
-    PlainText(dc, L"UP/DOWN: select     ENTER / CLICK: accept     B: shop     ESC: back", hint,
-        DT_CENTER | DT_SINGLELINE, RGB(110, 110, 110));
-
+    RECT hint = { 0, 368, frame.width, 392 };
+    PlainText(dc, L"UP / DOWN  pick     ENTER / CLICK  go     B  shop     ESC  back", hint,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE, Warm::TEXT_SOFT);
     SelectObject(dc, oldFont);
 }
 
@@ -621,10 +996,10 @@ ShopScreen::ShopScreen(GameData& data)
     : m_data(data), m_selected(0), m_lastMouseX(-1), m_lastMouseY(-1),
     m_feedback(L""), m_feedbackColor(RGB(255, 255, 255)), m_feedbackTimer(0.0f)
 {
-    m_titleFont = MakeFont(26);
-    m_nameFont = MakeFont(17);
-    m_textFont = MakeFont(13);
-    m_backButton = { 40, 18, 140, 46 };
+    m_titleFont = MakeCuteFont(26, true);
+    m_nameFont = MakeCuteFont(18, true);
+    m_textFont = MakeCuteFont(14, false);
+    m_backButton = { 20, 14, 122, 44 };
 
     for (int i = 1; i < (int)ItemType::Count; ++i)
         MakeItemIcon((ItemType)i, m_icons[i]);
@@ -646,12 +1021,12 @@ void ShopScreen::Enter()
 RECT ShopScreen::CardRect(int index) const
 {
     // Cards shrink to fit as items get added.
-    const int h = 210, gap = 30;
+    const int h = 214, gap = 24;
     int w = (SCREEN_W - 80 - (ITEM_COUNT - 1) * gap) / ITEM_COUNT;
     if (w > 220) w = 220;
     int total = ITEM_COUNT * w + (ITEM_COUNT - 1) * gap;
     int left = (SCREEN_W - total) / 2 + index * (w + gap);
-    RECT r = { left, 70, left + w, 70 + h };
+    RECT r = { left, 64, left + w, 64 + h };
     return r;
 }
 
@@ -674,19 +1049,22 @@ void ShopScreen::TryBuy(int index)
     if (m_data.heldItem != ItemType::None)
     {
         m_feedback = L"YOU ALREADY HAVE AN ITEM - USE IT FIRST";
-        m_feedbackColor = RGB(255, 160, 60);
+        m_feedbackColor = Warm::ORANGE;
+        Audio::Get().Play(Sfx::Denied);
     }
     else if (m_data.money < info.price)
     {
         m_feedback = L"NOT ENOUGH MONEY";
-        m_feedbackColor = RGB(255, 80, 80);
+        m_feedbackColor = Warm::RED;
+        Audio::Get().Play(Sfx::Denied);
     }
     else
     {
         m_data.money -= info.price;
         m_data.heldItem = CardItem(index);
         m_feedback = L"BOUGHT!";
-        m_feedbackColor = RGB(80, 255, 80);
+        m_feedbackColor = Warm::GREEN;
+        Audio::Get().Play(Sfx::Bought);
     }
     m_feedbackTimer = FEEDBACK_TIME;
 }
@@ -694,6 +1072,7 @@ void ShopScreen::TryBuy(int index)
 GameState ShopScreen::Update(float dt, const Input& input)
 {
     if (m_feedbackTimer > 0.0f) m_feedbackTimer -= dt;
+    int before = m_selected;
 
     int mx = input.MouseX(), my = input.MouseY();
     int hit = HitTest(mx, my);
@@ -712,6 +1091,7 @@ GameState ShopScreen::Update(float dt, const Input& input)
         m_selected = (m_selected + ITEM_COUNT - 1) % ITEM_COUNT;
     if (input.WasPressed(VK_RIGHT) || input.WasPressed('D'))
         m_selected = (m_selected + 1) % ITEM_COUNT;
+    if (!input.WasPressed(VK_LBUTTON)) TickIfMoved(before, m_selected);
 
     if (input.WasPressed(VK_LBUTTON) && hover >= 0)
     {
@@ -726,95 +1106,94 @@ GameState ShopScreen::Update(float dt, const Input& input)
 
 void ShopScreen::Render(Frame& frame)
 {
-    for (int i = 0; i < frame.width * frame.height; ++i) frame.pixels[i] = UI_BG;
+    HDC dc = frame.dc;
+    SetBkMode(dc, TRANSPARENT);
+    DrawWarmBackground(frame);
 
     bool holding = m_data.heldItem != ItemType::None;
+    wchar_t buf[128];
+    RECT priceTag[ITEM_COUNT];
 
     for (int i = 0; i < ITEM_COUNT; ++i)
     {
         RECT r = CardRect(i);
         bool sel = (i == m_selected);
-        FillBox(frame, r, sel ? 0x0A3C0A : UI_DARK);
-        OutlineBox(frame, r, sel ? 0x32DC32 : 0x2A4A2A);
+        if (sel) OffsetRect(&r, 0, -4);
+        const ItemInfo& info = GetItemInfo(CardItem(i));
 
-        // Potion at 4x, centered near the top.
-        const int iw = 64, ih = 52;   // potions fill the height, the bone the width
-        DrawIcon(frame, m_icons[(int)CardItem(i)], (r.left + r.right - iw) / 2, r.top + 16, iw, ih);
+        DrawCard(frame, r, 12, sel ? Warm::PAPER_SEL : Warm::PAPER, sel ? Warm::BORDER_SEL : Warm::INK, sel ? 3.0f : 2.0f, sel ? 6 : 3);
+
+        // Item on a round backdrop tinted with its own color.
+        int cx = (r.left + r.right) / 2;
+        DWORD tint = info.color;
+        DWORD soft = (DWORD)(((((tint >> 16) & 255) + 3 * 255) / 4) << 16 | ((((tint >> 8) & 255) + 3 * 255) / 4) << 8 | (((tint & 255) + 3 * 255) / 4));
+        RECT circle = { cx - 34, r.top + 12, cx + 34, r.top + 80 };
+        DrawCard(frame, circle, 34, soft, Warm::INK, 1.5f, 0);
+        DrawIcon(frame, m_icons[(int)CardItem(i)], cx - 24, r.top + 20, 48, 52);
+
+        wsprintfW(buf, L"$%d", info.price);
+        bool affordable = m_data.money >= info.price;
+        priceTag[i] = DrawTagPill(frame, dc, m_nameFont, buf, cx - 30, r.bottom - 54, affordable ? Warm::COIN : 0xE8D8C4);
+        priceTag[i].right = cx + 30; priceTag[i].bottom = priceTag[i].top + 22;
+        DrawCard(frame, priceTag[i], 10, affordable ? Warm::COIN : 0xE8D8C4, Warm::INK, 1.5f, 0);
     }
 
     bool backHover = HitTest(m_lastMouseX, m_lastMouseY) == BACK_BUTTON;
-    FillBox(frame, m_backButton, backHover ? 0x0A3C0A : UI_DARK);
-    OutlineBox(frame, m_backButton, UI_GREEN);
+    DrawWood(frame, m_backButton, backHover);
 
-    HDC dc = frame.dc;
-    SetBkMode(dc, TRANSPARENT);
-    HGDIOBJ oldFont = SelectObject(dc, m_titleFont);
-    wchar_t buf[128];
+    DrawTitleSign(frame, dc, m_titleFont, L"Cat Shop");
+    DrawMoneyPill(frame, dc, m_nameFont, m_data.money);
 
-    RECT title = { 0, 16, frame.width, 50 };
-    PlainText(dc, L"SHOP", title, DT_CENTER | DT_SINGLELINE, TEXT_GREEN);
-
-    SelectObject(dc, m_nameFont);
-    PlainText(dc, L"< BACK", m_backButton, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXT_GREEN);
-
-    wsprintfW(buf, L"$%d", m_data.money);
-    RECT money = { 0, 22, frame.width - 40, 50 };
-    PlainText(dc, buf, money, DT_RIGHT | DT_SINGLELINE, RGB(255, 220, 0));
+    HGDIOBJ oldFont = SelectObject(dc, m_nameFont);
+    PlainText(dc, L"< Back", m_backButton, DT_CENTER | DT_VCENTER | DT_SINGLELINE, Warm::TEXT);
 
     for (int i = 0; i < ITEM_COUNT; ++i)
     {
         RECT r = CardRect(i);
         bool sel = (i == m_selected);
+        if (sel) OffsetRect(&r, 0, -4);
         const ItemInfo& info = GetItemInfo(CardItem(i));
         bool owned = m_data.heldItem == CardItem(i);
         bool affordable = m_data.money >= info.price;
 
         SelectObject(dc, m_nameFont);
-        RECT name = { r.left, r.top + 80, r.right, r.top + 100 };
-        PlainText(dc, info.name, name, DT_CENTER | DT_SINGLELINE, sel ? RGB(255, 255, 255) : RGB(180, 180, 180));
+        RECT name = { r.left, r.top + 84, r.right, r.top + 108 };
+        PlainText(dc, info.name, name, DT_CENTER | DT_VCENTER | DT_SINGLELINE, Warm::TEXT);
 
         SelectObject(dc, m_textFont);
-        RECT desc = { r.left + 10, r.top + 104, r.right - 10, r.top + 156 };
-        PlainText(dc, info.description, desc, DT_CENTER | DT_WORDBREAK, RGB(170, 200, 170));
+        RECT desc = { r.left + 10, r.top + 110, r.right - 10, r.bottom - 58 };
+        PlainText(dc, info.description, desc, DT_CENTER | DT_WORDBREAK, Warm::TEXT_SOFT);
 
-        SelectObject(dc, m_nameFont);
-        RECT price = { r.left, r.bottom - 52, r.right, r.bottom - 32 };
         wsprintfW(buf, L"$%d", info.price);
-        PlainText(dc, buf, price, DT_CENTER | DT_SINGLELINE,
-            affordable ? RGB(255, 220, 0) : RGB(150, 70, 70));
+        DrawTagText(dc, m_nameFont, buf, priceTag[i], affordable ? Warm::TEXT : Warm::TEXT_FADE);
 
-        SelectObject(dc, m_textFont);
-        RECT state = { r.left, r.bottom - 26, r.right, r.bottom - 10 };
-        const wchar_t* label = owned ? L"CARRYING"
-            : holding ? L"ONE ITEM AT A TIME"
-            : affordable ? (sel ? L"ENTER / CLICK TO BUY" : L"BUY")
-            : L"CAN'T AFFORD";
-        COLORREF color = owned ? RGB(80, 255, 80)
-            : (holding || !affordable) ? RGB(110, 110, 110)
-            : (sel ? RGB(255, 255, 255) : RGB(170, 170, 170));
-        PlainText(dc, label, state, DT_CENTER | DT_SINGLELINE, color);
+        RECT state = { r.left, r.bottom - 28, r.right, r.bottom - 8 };
+        const wchar_t* label = owned ? L"Carrying"
+            : holding ? L"One item at a time"
+            : affordable ? (sel ? L"Enter / click to buy" : L"Buy")
+            : L"Can't afford";
+        COLORREF color = owned ? Warm::GREEN : (holding || !affordable) ? Warm::TEXT_FADE : Warm::ORANGE;
+        PlainText(dc, label, state, DT_CENTER | DT_VCENTER | DT_SINGLELINE, color);
     }
 
-    RECT carry = { 0, 296, frame.width, 314 };
+    RECT carry = { 0, 290, frame.width, 310 };
     if (holding)
-        wsprintfW(buf, L"Carrying: %s - use it on a delivery (Q) to buy another",
-            GetItemInfo(m_data.heldItem).name);
+        wsprintfW(buf, L"Carrying: %s - use it on a delivery (Q) to buy another", GetItemInfo(m_data.heldItem).name);
     else
         lstrcpyW(buf, L"You can carry one item. Press Q during a delivery to use it.");
-    PlainText(dc, buf, carry, DT_CENTER | DT_SINGLELINE, holding ? RGB(255, 220, 0) : RGB(150, 150, 150));
+    PlainText(dc, buf, carry, DT_CENTER | DT_VCENTER | DT_SINGLELINE, holding ? Warm::ORANGE : Warm::TEXT_SOFT);
 
     if (m_feedbackTimer > 0.0f)
     {
         SelectObject(dc, m_nameFont);
-        RECT fb = { 0, 324, frame.width, 346 };
-        PlainText(dc, m_feedback, fb, DT_CENTER | DT_SINGLELINE, m_feedbackColor);
+        RECT fb = { 0, 314, frame.width, 340 };
+        PlainText(dc, m_feedback, fb, DT_CENTER | DT_VCENTER | DT_SINGLELINE, m_feedbackColor);
         SelectObject(dc, m_textFont);
     }
 
-    RECT hint = { 0, 372, frame.width, 390 };
-    PlainText(dc, L"LEFT/RIGHT: select     ENTER / CLICK: buy     ESC / B: back", hint,
-        DT_CENTER | DT_SINGLELINE, RGB(110, 110, 110));
-
+    RECT hint = { 0, 368, frame.width, 392 };
+    PlainText(dc, L"LEFT / RIGHT  pick     ENTER / CLICK  buy     ESC / B  back", hint,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE, Warm::TEXT_SOFT);
     SelectObject(dc, oldFont);
 }
 
@@ -826,7 +1205,7 @@ void ShopScreen::Render(Frame& frame)
 static const float MESSAGE_TIME = 3.0f;   // seconds a message stays up
 
 RunScreen::RunScreen(GameData& data)
-    : m_data(data), m_enemyCount(0), m_thirdPerson(true), m_loadedCharacter(-1), m_shake(0.0f), m_fireTimer(0.0f), m_alertTimer(0.0f),
+    : m_data(data), m_enemyCount(0), m_thirdPerson(true), m_loadedCharacter(-1), m_shake(0.0f), m_lastCatX(0), m_lastCatY(0), m_lastStep(0), m_fireTimer(0.0f), m_alertTimer(0.0f),
     m_boneActive(false), m_boneX(0), m_boneY(0), m_boneTimer(0), m_time(0.0f), m_hitFlash(0.0f),
     m_messageColor(RGB(255, 255, 255)), m_messageTimer(0.0f)
 {
@@ -870,8 +1249,16 @@ void RunScreen::Enter()
     m_player.Reset(m_map.StartX(), m_map.StartY());
     LoadCatPictures();
     m_run.Start(c, m_map, m_data.rng);
-    m_renderer.SetNight(c.night);
+    m_renderer.SetSky(c.time, m_data.rng.Next());   // new sky + skyline every delivery
     SpawnEnemies();
+
+    m_catWalk = WalkCycle();
+    m_lastCatX = m_player.X(); m_lastCatY = m_player.Y();
+    for (int i = 0; i < m_enemyCount; ++i)
+    {
+        m_dogWalk[i] = WalkCycle();
+        m_lastDogX[i] = m_enemies[i].X(); m_lastDogY[i] = m_enemies[i].Y();
+    }
 
     m_messageTimer = 0.0f;
     m_hitFlash = 0.0f;
@@ -893,6 +1280,8 @@ void RunScreen::LoadCatPictures()
     m_catBack.Load(info.spriteBack);
     m_catBackSide.Load(info.spriteBackSide);
     m_catSide.Load(info.spriteSide);
+    if (info.spriteSideLeft) m_catSideLeft.Load(info.spriteSideLeft); else m_catSideLeft.Clear();
+    if (info.spriteAbility)  m_catAbility.Load(info.spriteAbility);   else m_catAbility.Clear();
 }
 
 void RunScreen::OnAbilityLanded()
@@ -909,6 +1298,7 @@ void RunScreen::OnAbilityLanded()
                 m_enemies[i].Knockback(m_player.X(), m_player.Y());
         }
         m_shake = SLAM_SHAKE_TIME;
+        Audio::Get().Play(Sfx::GroundPound);
         break;
     }
     default:
@@ -930,6 +1320,7 @@ void RunScreen::ShootFurBall()
         b.travelled = 0.0f;
         b.alive = true;
         m_fireTimer = FUR_FIRE_INTERVAL;
+        Audio::Get().Play(Sfx::FurShot, 0.7f);
         return;
     }
 }
@@ -1014,6 +1405,7 @@ void RunScreen::CheckBites()
         {
             e.OnBite();
             m_hitFlash = 0.35f;
+            Audio::Get().Play(Sfx::Bite);
             ShowMessage(m_player.Hp() > 0 ? L"OUCH! A DOG GOT YOU!" : L"", RGB(255, 80, 80));
         }
     }
@@ -1028,8 +1420,10 @@ void RunScreen::UseHeldItem()
     if (!UseItem(item, m_player, *this))
     {
         ShowMessage(info.failMessage, RGB(200, 200, 200));   // kept for later
+        Audio::Get().Play(Sfx::Denied, 0.6f);
         return;
     }
+    Audio::Get().Play(Sfx::UseItem);
 
     m_data.heldItem = ItemType::None;
     DWORD c = info.color;   // 0xRRGGBB -> COLORREF
@@ -1062,6 +1456,7 @@ void RunScreen::ShowMessage(const wchar_t* text, COLORREF color)
 GameState RunScreen::Update(float dt, const Input& input)
 {
     m_time += dt;
+    m_renderer.AdvanceSky(dt);
     if (m_messageTimer > 0.0f) m_messageTimer -= dt;
     if (m_hitFlash > 0.0f)     m_hitFlash -= dt;
 
@@ -1082,9 +1477,23 @@ GameState RunScreen::Update(float dt, const Input& input)
 
     if (input.WasPressed(ITEM_USE_KEY))
         UseHeldItem();
-    if (input.WasPressed(ABILITY_KEY) && m_player.UseAbility() &&
-        m_player.GetAbility().Type() == AbilityType::FurBarrage)
-        ShowMessage(L"FUR BARRAGE!  CLICK / SPACE TO SHOOT", RGB(220, 220, 220));
+    if (input.WasPressed(ABILITY_KEY) && m_player.UseAbility())
+    {
+        switch (m_player.GetAbility().Type())
+        {
+        case AbilityType::FurBarrage:
+            ShowMessage(L"FUR BARRAGE!  CLICK / SPACE TO SHOOT", RGB(220, 220, 220));
+            Audio::Get().Play(Sfx::Spotted, 0.5f);
+            break;
+        case AbilityType::Dash:
+            Audio::Get().Play(Sfx::Dash);
+            break;
+        case AbilityType::GroundPound:
+            Audio::Get().Play(Sfx::Dash, 0.35f);   // a soft whoosh going up (the thump comes on landing)
+            break;
+        default: break;
+        }
+    }
 
     // Fur barrage: one fur ball per click (or SPACE) while it lasts.
     if (m_fireTimer > 0.0f) m_fireTimer -= dt;
@@ -1103,7 +1512,36 @@ GameState RunScreen::Update(float dt, const Input& input)
     for (int i = 0; i < m_enemyCount; ++i)
     {
         m_enemies[i].Update(dt, m_map, m_player, m_enemies, m_enemyCount);
-        if (m_enemies[i].JustSpotted()) m_alertTimer = SPOTTED_ALERT_TIME;
+        if (m_enemies[i].JustSpotted())
+        {
+            if (m_alertTimer < SPOTTED_ALERT_TIME - 0.3f) Audio::Get().Play(Sfx::Spotted);   // once, even if several see you
+            m_alertTimer = SPOTTED_ALERT_TIME;
+        }
+    }
+
+    // Walk animation: steps follow the distance moved this frame.
+    {
+        float dx = m_player.X() - m_lastCatX, dy = m_player.Y() - m_lastCatY;
+        m_catWalk.Update(dt, sqrtf(dx * dx + dy * dy), CAT_STEPS_PER_TILE, !m_player.GetAbility().IsAirborne());
+        m_lastCatX = m_player.X(); m_lastCatY = m_player.Y();
+
+        // A cute "pi-po" each time a foot lands: the two feet alternate between
+        // two notes (a whole step apart), with a hair of randomness.
+        int step = m_catWalk.StepCount();
+        if (step != m_lastStep && m_catWalk.IsWalking() && FOOTSTEP_VOLUME > 0.0f)
+        {
+            float note = (step & 1) ? 1.0f : 1.1225f;                                  // "pi" / "po"
+            float pitch = note * (0.98f + (Hash(step, (int)(m_time * 100.0f)) % 5) / 100.0f);
+            Audio::Get().Play(Sfx::Step, FOOTSTEP_VOLUME, pitch);
+        }
+        m_lastStep = step;
+        for (int i = 0; i < m_enemyCount; ++i)
+        {
+            const Enemy& e = m_enemies[i];
+            dx = e.X() - m_lastDogX[i]; dy = e.Y() - m_lastDogY[i];
+            m_dogWalk[i].Update(dt, sqrtf(dx * dx + dy * dy), DOG_STEPS_PER_TILE, !e.IsKnockedBack());
+            m_lastDogX[i] = e.X(); m_lastDogY[i] = e.Y();
+        }
     }
 
     CheckBites();
@@ -1113,7 +1551,12 @@ GameState RunScreen::Update(float dt, const Input& input)
     int events = m_run.Update(dt, m_player.X(), m_player.Y());
 
     if (events & DeliveryRun::EVENT_EXPRESS_EXPIRED)
+    {
         ShowMessage(L"EXPRESS EXPIRED - BONUS LOST", RGB(255, 70, 70));
+        Audio::Get().Play(Sfx::Denied);
+    }
+    if (events & (DeliveryRun::EVENT_STOP_DELIVERED | DeliveryRun::EVENT_FINISHED))
+        Audio::Get().Play(Sfx::Delivered);
 
     if (events & DeliveryRun::EVENT_EXPRESS_DELIVERED)
     {
@@ -1163,10 +1606,11 @@ void RunScreen::Render(Frame& frame)
     // First person ground pound: the world drops away as you jump.
     // Landing: a short, sharp shake.
     int shift = 0;
-    if (!m_thirdPerson) shift += (int)(m_player.GetAbility().JumpHeight() * frame.height * 0.6f);
+    if (!m_thirdPerson) shift += (int)(m_player.GetAbility().Height() * frame.height * 0.6f);
     if (m_shake > 0.0f) shift += (int)(sinf(m_time * 90.0f) * 6.0f * (m_shake / SLAM_SHAKE_TIME));
     ShiftFrameY(frame, shift);
 
+    if (m_player.GetAbility().IsDashing()) DrawSpeedLines(frame);
     m_renderer.DrawCrosshair(frame.pixels);
     if (m_alertTimer > 0.0f && !m_run.Finished()) DrawSpottedAlert(frame, cameraDistance);
 
@@ -1339,15 +1783,19 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
             const Enemy& e = m_enemies[it.index];
             const Texture& pic = m_dogs[(int)e.Type()];
 
-            float headTop;   // dog height, in wall heights
+            const WalkCycle& walk = m_dogWalk[it.index];
+            float hop = walk.Lift();
+            float headTop;   // top of the dog's head, in wall heights
             if (pic.IsLoaded())
             {
                 // Flip so the dog faces the way it's running across the screen
                 // (the camera plane points to screen-right).
                 float across = e.MoveX() * cam.planeX + e.MoveY() * cam.planeY;
                 bool mirror = DOG_SPRITE_FACES_RIGHT ? (across < 0.0f) : (across > 0.0f);
-                headTop = DOG_SPRITE_SCALES[(int)e.Type()];
-                m_renderer.DrawSprite(frame.pixels, cam, e.X(), e.Y(), pic, headTop, mirror, 1.0f, light);
+                SpritePose pose = walk.Pose();
+                float size = DOG_SPRITE_SCALES[(int)e.Type()];
+                m_renderer.DrawSprite(frame.pixels, cam, e.X(), e.Y(), pic, size, mirror, 1.0f, light, hop, &pose);
+                headTop = size * pose.stretchY + hop;
             }
             else
             {
@@ -1355,7 +1803,7 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
                     : (e.Type() == EnemyType::Purple) ? 0xA040E0
                     : 0x3070F0;
                 m_renderer.DrawEnemy(frame.pixels, cam, e.X(), e.Y(), color);
-                headTop = 0.75f;
+                headTop = 0.75f;   // the placeholder blob doesn't animate
             }
 
             // Seeing stars: a spinning ring of them around its head.
@@ -1384,20 +1832,32 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
             bool strafing = m_player.StrafeInput() != 0.0f;
             bool forward = m_player.ForwardInput() != 0.0f;
             bool mirror = m_player.StrafeInput() < 0.0f;
+            bool hasLeft = m_catSideLeft.IsLoaded();
 
             const Texture* pic = &m_catBack;
             if (strafing && forward && m_catBackSide.IsLoaded()) pic = &m_catBackSide;
+            else if (strafing && mirror && hasLeft) { pic = &m_catSideLeft; mirror = false; }   // its own left side
             else if (strafing && m_catSide.IsLoaded())          pic = &m_catSide;
-            if (pic == &m_catBack) mirror = false;
+            if (pic == &m_catBack) mirror = m_catWalk.OddStep();   // back view: flip every step = waddle
 
-            // Ground pound: up in the air, with a shadow left on the ground.
-            float jump = m_player.GetAbility().JumpHeight();
-            if (jump > 0.0f)
+            // Dashing: the ability pose (speed lines are drawn over the screen).
+            const Ability& ab = m_player.GetAbility();
+            if (ab.IsDashing() && m_catAbility.IsLoaded()) { pic = &m_catAbility; mirror = false; }
+            float height = ab.Height();
+
+            // Off the ground (jump or dash): a shadow left on the ground.
+            if (height > 0.0f)
+            {
+                float shadowFade = 1.0f - height * 1.4f;
+                if (shadowFade < 0.3f) shadowFade = 0.3f;
                 m_renderer.DrawSprite(frame.pixels, cam, m_player.X(), m_player.Y(), m_shadow,
-                    0.05f, false, catFade * (1.0f - jump / GROUND_POUND_HEIGHT * 0.5f), light);
+                    0.05f, false, catFade * shadowFade, light);
+            }
 
+            SpritePose pose = m_catWalk.Pose();
             m_renderer.DrawSprite(frame.pixels, cam, m_player.X(), m_player.Y(),
-                *pic, CAT_SPRITE_SCALE, mirror, catFade, light, jump);
+                *pic, CAT_SPRITE_SCALE, mirror, catFade, light,
+                height + m_catWalk.Lift(), &pose);
         }
     }
 }
@@ -1408,6 +1868,41 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
 //   bottom left  HP bar (one segment per hit point) + stamina bar
 //   bottom right item slot + ability slot (ability comes later)
 //   bottom mid   messages (bites, out of breath, deliveries)
+// Anime speed lines rushing in from the edges of the screen (dash).
+void RunScreen::DrawSpeedLines(Frame& frame)
+{
+    const int W = frame.width, H = frame.height;
+    float cx = W * 0.5f, cy = H * 0.5f;
+    float edge = sqrtf(cx * cx + cy * cy);
+    int flicker = (int)(m_time * 30.0f);   // a new set of lines every frame or two
+
+    for (int i = 0; i < 40; ++i)
+    {
+        unsigned n = Hash(i * 31 + flicker * 7, i * 17 + 3);
+        float a = (i + (n % 100) / 100.0f) / 40.0f * 6.2831853f;
+        float r0 = edge * (0.42f + (n >> 8) % 30 / 100.0f);   // inner end of the line
+        float dx = cosf(a), dy = sinf(a);
+        float px = -dy, py = dx;                               // sideways, for thickness
+        int   strength = 150 + (int)((n >> 16) % 90);
+
+        for (float r = r0; r < edge; r += 0.7f)
+        {
+            float k = (r - r0) / (edge - r0);                  // 0 inner .. 1 at the edge
+            int alpha = (int)(strength * k);
+            float width = 0.5f + 2.5f * k;                     // thin tip, thick near the edge
+            for (float s = -width; s <= width; s += 1.0f)
+            {
+                int x = (int)(cx + dx * r + px * s), y = (int)(cy + dy * r + py * s);
+                if (x < 0 || y < 0 || x >= W || y >= H) continue;
+                DWORD& p = frame.pixels[y * W + x];
+                int pr = (p >> 16) & 255, pg = (p >> 8) & 255, pb = p & 255;
+                pr += (255 - pr) * alpha / 255; pg += (255 - pg) * alpha / 255; pb += (255 - pb) * alpha / 255;
+                p = (DWORD)(pr << 16 | pg << 8 | pb);
+            }
+        }
+    }
+}
+
 // The red "!" over the cat's head (or above the crosshair in first person).
 // Pops in big, settles, and blinks out at the end.
 void RunScreen::DrawSpottedAlert(Frame& frame, float cameraDistance)

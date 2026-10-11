@@ -36,8 +36,8 @@ static DWORD HouseWall(int type, int tileX, int tileY, float u, float v,
     DWORD wall = HOUSE_COLORS[type], roof = ROOF_COLORS[type];
     float wob = Wobble(tileX, tileY, v);
 
-    // ----- roof band: two rows of scalloped shingles -----
-    if (v < 0.035f + wob) return INK;                       // roof top line
+    // ----- roof overhang: two rows of scalloped shingles -----
+    // (the real sloped roof continues above the wall, see RoofColor)
     if (v < 0.20f)
     {
         int   row = (int)((v - 0.035f) / 0.0825f);         // 0 or 1
@@ -305,14 +305,391 @@ DWORD HedgeTopColor(float fx, float fy)
     }
 }
 
-DWORD SkyColor(float t, bool night)
+// =====================================================
+// SKY
+// =====================================================
+
+namespace
 {
-    if (night) return Rgb(26 + (int)(80 * t * t), 30 + (int)(40 * t * t), 58 + (int)(52 * t * t));
-    return Rgb(70 + (int)(120 * t), 132 + (int)(90 * t), 210 + (int)(35 * t));   // blue to pale
+    // Everything that changes between times of day.
+    struct SkyPalette
+    {
+        DWORD top, mid, horizon;      // gradient, top of the screen -> horizon
+        DWORD haze;  float hazeDist;  DWORD tint;
+        DWORD sun, sunGlow;           // disc + the glow around it
+        float sunRadius;              // pixels
+        float sunHeight;              // 0 horizon .. 1 top of the screen
+        bool  moon;                   // moon + stars instead of the sun
+        int   cloudCount;
+        DWORD cloud, cloudShade;
+        DWORD distant, nearer;            // skyline: tall city buildings / rooftops and trees
+        bool  litWindows;
+    };
+
+    const SkyPalette& Palette(TimeOfDay t)
+    {
+        static const SkyPalette P[(int)TimeOfDay::Count] =
+        {
+            // Morning: peach at the bottom, soft blue above, pale sun low on the side
+            { 0x7FB0E6, 0xC4D6EE, 0xF6D8C4,  0xEBD9CE, 22.0f, 0xFFF2EA,
+              0xFFF4C8, 0xFFE2B8, 17.0f, 0.24f, false, 9,  0xFFF6F2, 0xE6C6C8,
+              0xC5BED2, 0x8C8AA6, false },
+              // Noon: clean blue, small high sun, white clouds
+              { 0x3C82D6, 0x78AEE8, 0xC2DCF2,  0xBCD4EA, 24.0f, 0xFFFFFF,
+                0xFFFBE0, 0xFFF6D0, 13.0f, 0.80f, false, 11, 0xFFFFFF, 0xD4E0EE,
+                0xA6BACE, 0x6C879E, false },
+                // Sunset: indigo -> pink -> orange, huge sun sitting on the skyline
+                { 0x34366E, 0xD6648A, 0xFFB25C,  0xF0A070, 20.0f, 0xFFD8B6,
+                  0xFFE680, 0xFFB060, 30.0f, 0.07f, false, 8,  0xF8A6A0, 0xA85A7C,
+                  0xB2667E, 0x51304A, false },
+                  // Night: deep blue-purple, moon, stars, lit windows
+                  { 0x0E1228, 0x222650, 0x463862,  0x2A2438, 15.0f, 0xFFFFFF,
+                    0xF4F0DA, 0x8A86B8, 15.0f, 0.55f, true,  4,  0x3A3E68, 0x282A4C,
+                    0x2C2946, 0x141328, true },
+        };
+        int i = (int)t;
+        if (i < 0 || i >= (int)TimeOfDay::Count) i = 3;
+        return P[i];
+    }
+
+    DWORD Mix(DWORD a, DWORD b, float t)
+    {
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        int ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+        int br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+        return Rgb(ar + (int)((br - ar) * t), ag + (int)((bg - ag) * t), ab + (int)((bb - ab) * t));
+    }
+
+    DWORD AddLight(DWORD c, DWORD light, float k)
+    {
+        return Rgb(((c >> 16) & 255) + (int)(((light >> 16) & 255) * k),
+            ((c >> 8) & 255) + (int)(((light >> 8) & 255) * k),
+            (c & 255) + (int)((light & 255) * k));
+    }
+
+    // Tiny random generator for painting (xorshift).
+    struct Dice
+    {
+        unsigned s;
+        unsigned Next() { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }
+        int   Range(int lo, int hi) { return lo + (int)(Next() % (unsigned)(hi - lo + 1)); }
+        float Unit() { return (Next() % 10000) / 10000.0f; }
+    };
+
+    inline int Wrap(int x, int w) { x %= w; return x < 0 ? x + w : x; }
+
+    const DWORD SKY_SOLID = 0xFF000000;
+
+    // A filled circle into a layer (with a mask of which layer owns each pixel).
+    void SkyBlob(DWORD* layer, unsigned char* mask, int w, int h, float cx, float cy, float r,
+        DWORD color, unsigned char id)
+    {
+        for (int y = (int)(cy - r) - 1; y <= (int)(cy + r) + 1; ++y)
+        {
+            if (y < 0 || y >= h) continue;
+            for (int x = (int)(cx - r) - 1; x <= (int)(cx + r) + 1; ++x)
+            {
+                float dx = x + 0.5f - cx, dy = y + 0.5f - cy;
+                if (dx * dx + dy * dy > r * r) continue;
+                int i = y * w + Wrap(x, w);
+                layer[i] = SKY_SOLID | color;
+                if (mask) mask[i] = id;
+            }
+        }
+    }
+
+    void Rect(DWORD* layer, unsigned char* mask, int w, int h, int x0, int y0, int x1, int y1,
+        DWORD color, unsigned char id)
+    {
+        for (int y = y0; y < y1; ++y)
+        {
+            if (y < 0 || y >= h) continue;
+            for (int x = x0; x < x1; ++x)
+            {
+                int i = y * w + Wrap(x, w);
+                layer[i] = SKY_SOLID | color;
+                if (mask) mask[i] = id;
+            }
+        }
+    }
+
+    // Ink line along the top edge of everything painted with this id.
+    void TopEdges(DWORD* layer, const unsigned char* mask, int w, int h, unsigned char id, DWORD ink)
+    {
+        for (int y = 1; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+            {
+                int i = y * w + x;
+                if (mask[i] == id && mask[i - w] < id) layer[i] = SKY_SOLID | ink;
+            }
+    }
 }
 
-DWORD HazeColor(bool night) { return night ? 0x2A2438 : 0xBCD4EA; }
-float HazeDistance(bool night) { return night ? 15.0f : 24.0f; }
+SkyLook GetSkyLook(TimeOfDay time)
+{
+    const SkyPalette& p = Palette(time);
+    SkyLook look = { p.haze, p.hazeDist, p.tint };
+    return look;
+}
+
+void PaintSky(TimeOfDay time, unsigned seed, DWORD* base, DWORD* clouds, DWORD* skyline, int w, int h)
+{
+    const SkyPalette& p = Palette(time);
+    Dice dice = { seed ? seed : 1u };
+    for (int i = 0; i < 8; ++i) dice.Next();
+
+    // ----- Base: gradient + sun glow -----
+    float sunX = dice.Unit() * w;
+    float sunY = h - 1 - p.sunHeight * h;
+    float glowR = p.sunRadius * (p.moon ? 4.0f : 6.0f);
+
+    for (int y = 0; y < h; ++y)
+    {
+        float e = (float)(h - y) / h;   // 0 at the horizon .. 1 at the top
+        DWORD g = (e < 0.35f) ? Mix(p.horizon, p.mid, e / 0.35f) : Mix(p.mid, p.top, (e - 0.35f) / 0.65f);
+        for (int x = 0; x < w; ++x)
+        {
+            float dx = (float)Wrap(x - (int)sunX + w / 2, w) - w / 2, dy = y - sunY;
+            float d = sqrtf(dx * dx + dy * dy);
+            DWORD c = g;
+            if (d < glowR)
+            {
+                float k = 1.0f - d / glowR;
+                c = AddLight(c, p.sunGlow, k * k * (p.moon ? 0.25f : 0.55f));
+            }
+            base[y * w + x] = c;
+        }
+    }
+
+    // Stars (night): little dots, a few bigger crosses, fewer near the glowing horizon.
+    if (p.moon)
+    {
+        for (int i = 0; i < 700; ++i)
+        {
+            int x = dice.Range(0, w - 1), y = dice.Range(0, (int)(h * 0.8f));
+            float bright = 0.35f + 0.65f * dice.Unit();
+            DWORD c = Mix(base[y * w + x], 0xFFFFFF, bright * (1.0f - (float)y / h));
+            base[y * w + x] = c;
+            if (i % 25 == 0)
+            {
+                if (y > 0)     base[(y - 1) * w + x] = Mix(base[(y - 1) * w + x], c, 0.6f);
+                if (y < h - 1) base[(y + 1) * w + x] = Mix(base[(y + 1) * w + x], c, 0.6f);
+                base[y * w + Wrap(x - 1, w)] = Mix(base[y * w + Wrap(x - 1, w)], c, 0.6f);
+                base[y * w + Wrap(x + 1, w)] = Mix(base[y * w + Wrap(x + 1, w)], c, 0.6f);
+            }
+        }
+    }
+
+    // Sun / moon disc with an outline (like the rest of the art).
+    {
+        float r = p.sunRadius;
+        DWORD rim = p.moon ? 0xB8B29A : Mix(p.sun, 0xE07020, 0.45f);
+        for (int y = (int)(sunY - r) - 1; y <= (int)(sunY + r) + 1; ++y)
+        {
+            if (y < 0 || y >= h) continue;
+            for (int x = (int)(sunX - r) - 1; x <= (int)(sunX + r) + 1; ++x)
+            {
+                float dx = x + 0.5f - sunX, dy = y + 0.5f - sunY;
+                float d = sqrtf(dx * dx + dy * dy);
+                if (d > r) continue;
+                DWORD c = (d > r - 1.5f) ? rim : p.sun;
+                if (!p.moon && d < r * 0.55f && dx < 0 && dy < 0) c = Mix(p.sun, 0xFFFFFF, 0.5f);   // shine
+                base[y * w + Wrap(x, w)] = c;
+            }
+        }
+        if (p.moon)   // a few craters
+        {
+            const float cr[3][3] = { { -0.35f, -0.2f, 0.22f }, { 0.25f, 0.3f, 0.16f }, { 0.3f, -0.35f, 0.12f } };
+            for (int k = 0; k < 3; ++k)
+            {
+                float ccx = sunX + cr[k][0] * r, ccy = sunY + cr[k][1] * r, rr = cr[k][2] * r;
+                for (int y = (int)(ccy - rr); y <= (int)(ccy + rr); ++y)
+                    for (int x = (int)(ccx - rr); x <= (int)(ccx + rr); ++x)
+                    {
+                        float dx = x + 0.5f - ccx, dy = y + 0.5f - ccy;
+                        if (y >= 0 && y < h && dx * dx + dy * dy <= rr * rr)
+                            base[y * w + Wrap(x, w)] = 0xD8D2B8;
+                    }
+            }
+        }
+    }
+
+    // ----- Clouds: puffs in a row, flat-ish bottoms, shaded underside, outlined -----
+    unsigned char* mask = new unsigned char[w * h];
+    for (int i = 0; i < w * h; ++i) { clouds[i] = 0; skyline[i] = 0; mask[i] = 0; }
+
+    for (int c = 0; c < p.cloudCount; ++c)
+    {
+        // One cloud = a flat-bottomed body with round puffs bulging on top.
+        unsigned char id = (unsigned char)(c + 1);
+        float cx = dice.Unit() * w;
+        float cy = h * (0.18f + 0.42f * dice.Unit());   // bottom line
+        float width = 50.0f + 100.0f * dice.Unit();
+        float body = 9.0f + 5.0f * dice.Unit();          // body thickness
+
+        // Body: a pill from left to right.
+        for (int y = (int)(cy - body); y <= (int)cy; ++y)
+            for (int x = (int)(cx - width * 0.5f); x <= (int)(cx + width * 0.5f); ++x)
+            {
+                float edge = fabsf(x - cx) - (width * 0.5f - body);   // rounded ends
+                float dy = y - (cy - body * 0.5f);
+                if (edge > 0.0f && edge * edge + dy * dy > body * body * 0.25f) continue;
+                if (y < 0 || y >= h) continue;
+                int idx = y * w + Wrap(x, w);
+                clouds[idx] = SKY_SOLID | p.cloud;
+                mask[idx] = id;
+            }
+
+        // Puffs along the top, biggest in the middle.
+        int puffs = 2 + (int)(width / 26.0f);
+        for (int k = 0; k < puffs; ++k)
+        {
+            float t = (k + 0.5f) / puffs;
+            float r = body * (0.8f + 0.9f * (1.0f - fabsf(t - 0.5f) * 1.6f)) + dice.Unit() * 3.0f;
+            float px = cx - width * 0.5f + body + (width - 2.0f * body) * t;
+            SkyBlob(clouds, mask, w, h, px, cy - body * 0.6f, r, p.cloud, id);
+        }
+
+        // Flat bottom, shaded underside (only this cloud's pixels).
+        for (int y = (int)(cy - 3); y < (int)(cy + 30); ++y)
+        {
+            if (y < 0 || y >= h) continue;
+            for (int x = (int)(cx - width); x <= (int)(cx + width); ++x)
+            {
+                int idx = y * w + Wrap(x, w);
+                if (mask[idx] != id) continue;
+                if (y > (int)cy) { clouds[idx] = 0; mask[idx] = 0; }
+                else             clouds[idx] = SKY_SOLID | p.cloudShade;
+            }
+        }
+    }
+    // Outline every cloud edge.
+    DWORD cloudInk = Scale(p.cloudShade, 0.72f);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+        {
+            int i = y * w + x;
+            if (!mask[i]) continue;
+            bool edge = y == 0 || y == h - 1 || !mask[i - w] || !mask[i + w] ||
+                !mask[y * w + Wrap(x - 1, w)] || !mask[y * w + Wrap(x + 1, w)];
+            if (edge) clouds[i] = SKY_SOLID | cloudInk;
+        }
+
+    // ----- Skyline: a downtown of tall buildings, rooftops and trees in front -----
+    for (int i = 0; i < w * h; ++i) mask[i] = 0;
+    float downtown = dice.Unit() * w;
+    float downtown2 = downtown + w * (0.35f + 0.3f * dice.Unit());   // a smaller second cluster
+
+    // Far layer: buildings (taller near downtown), with windows and antennas.
+    for (int x = 0; x < w; )
+    {
+        int bw = dice.Range(18, 56);
+        float d1 = fabsf((float)Wrap((int)(x - downtown + w / 2), w) - w / 2) / (w * 0.5f);
+        float d2 = fabsf((float)Wrap((int)(x - downtown2 + w / 2), w) - w / 2) / (w * 0.5f);
+        float tall = 1.0f - d1 * 3.0f;
+        float tall2 = (1.0f - d2 * 4.5f) * 0.6f;
+        if (tall2 > tall) tall = tall2;
+        if (tall < 0.0f) tall = 0.0f;
+        int bh = dice.Range(14, 26) + (int)(tall * dice.Range(25, 95));
+
+        Rect(skyline, mask, w, h, x, h - bh, x + bw, h, p.distant, 1);
+
+        // Setback top on some tall ones.
+        if (bh > 50 && dice.Range(0, 2) == 0)
+        {
+            int sw = bw / 2, sh = dice.Range(8, 18);
+            Rect(skyline, mask, w, h, x + (bw - sw) / 2, h - bh - sh, x + (bw + sw) / 2, h - bh, p.distant, 1);
+        }
+        // Antenna.
+        if (bh > 60 && dice.Range(0, 1) == 0)
+            Rect(skyline, mask, w, h, x + bw / 2, h - bh - dice.Range(8, 16), x + bw / 2 + 1, h - bh, p.distant, 1);
+        // Water tower on a few low ones.
+        if (bh < 30 && dice.Range(0, 7) == 0)
+        {
+            Rect(skyline, mask, w, h, x + bw / 2 - 5, h - bh - 9, x + bw / 2 + 5, h - bh - 3, p.distant, 1);
+            Rect(skyline, mask, w, h, x + bw / 2 - 4, h - bh - 3, x + bw / 2 - 3, h - bh, p.distant, 1);
+            Rect(skyline, mask, w, h, x + bw / 2 + 3, h - bh - 3, x + bw / 2 + 4, h - bh, p.distant, 1);
+        }
+        // Windows: a grid, lit at night.
+        for (int wy = h - bh + 4; wy < h - 4; wy += 6)
+            for (int wx = x + 3; wx < x + bw - 3; wx += 5)
+            {
+                DWORD wc;
+                if (p.litWindows) wc = (dice.Range(0, 99) < 35) ? 0xFFD27A : Scale(p.distant, 0.8f);
+                else              wc = Mix(p.distant, p.horizon, 0.35f);
+                Rect(skyline, nullptr, w, h, wx, wy, wx + 2, wy + 3, wc, 1);
+            }
+        x += bw + dice.Range(0, 6);
+    }
+    TopEdges(skyline, mask, w, h, 1, Scale(p.distant, 0.82f));
+
+    // Near layer: house roofs and tree tops, darker, with a strong ink top line.
+    for (int x = 0; x < w; )
+    {
+        int kind = dice.Range(0, 9);
+        if (kind < 5)   // house with a pointed roof
+        {
+            int bw = dice.Range(22, 40), wallH = dice.Range(7, 13), roofH = dice.Range(6, 11);
+            Rect(skyline, mask, w, h, x, h - wallH, x + bw, h, p.nearer, 2);
+            for (int ry = 0; ry < roofH; ++ry)
+            {
+                int inset = (bw / 2 + 2) * ry / roofH;
+                Rect(skyline, mask, w, h, x - 2 + inset, h - wallH - ry - 1, x + bw + 2 - inset, h - wallH - ry, p.nearer, 2);
+            }
+            if (p.litWindows && dice.Range(0, 1) == 0)
+                Rect(skyline, nullptr, w, h, x + bw / 3, h - wallH + 3, x + bw / 3 + 3, h - wallH + 6, 0xFFC864, 2);
+            x += bw + dice.Range(2, 8);
+        }
+        else if (kind < 8)   // tree clump
+        {
+            float r = (float)dice.Range(6, 12);
+            SkyBlob(skyline, mask, w, h, x + r, h - r * 0.9f, r, p.nearer, 2);
+            SkyBlob(skyline, mask, w, h, x + r * 1.8f, h - r * 0.6f, r * 0.75f, p.nearer, 2);
+            x += (int)(r * 2.6f) + dice.Range(0, 6);
+        }
+        else
+            x += dice.Range(10, 40);   // gap: lets the city show through
+    }
+    TopEdges(skyline, mask, w, h, 2, Mix(p.nearer, 0x000000, 0.45f));
+
+    // Haze over the bottom few rows so the skyline melts into the fog.
+    for (int y = h - 10; y < h; ++y)
+    {
+        float k = (y - (h - 10)) / 10.0f * 0.6f;
+        for (int x = 0; x < w; ++x)
+        {
+            int i = y * w + x;
+            if (skyline[i]) skyline[i] = SKY_SOLID | Mix(skyline[i] & 0xFFFFFF, p.haze, k);
+        }
+    }
+
+    delete[] mask;
+}
+
+// Sloped roof: rows of scalloped shingles following the slope, with ink on
+// the eave, the ridge and the hips, and each side lit a little differently.
+DWORD RoofColor(const RoofSample& r)
+{
+    DWORD roof = ROOF_COLORS[r.type & 3];
+    static const float FACET_LIGHT[4] = { 0.90f, 1.0f, 0.78f, 1.08f };   // west, east, north, south
+
+    if (r.edge < 0.03f) return INK;                                     // eave
+    if (r.edge2 - r.edge < 0.035f && r.edge > 0.06f) return INK;         // ridge / hip line
+
+    // Shingle rows: row 0 at the eave, going up the slope.
+    float rowPos = r.edge * 6.0f;
+    int   row = (int)rowPos;
+    float rv = 1.0f - (rowPos - row);                  // 0 top of the row .. 1 its bottom
+    float su = r.along * 6.0f + ((row & 1) ? 0.5f : 0.0f);
+    float cu = su - floorf(su) - 0.5f;                 // -0.5..0.5 inside a shingle
+    float arc = 0.78f + 0.9f * cu * cu;                 // the round bottom of each shingle
+
+    DWORD c = roof;
+    if (rv > arc - 0.14f && rv < arc + 0.02f) c = Scale(roof, 0.62f);
+    else if (fabsf(cu) > 0.46f && rv < arc)   c = Scale(roof, 0.76f);
+    return Scale(c, FACET_LIGHT[r.facet & 3]);
+}
 
 DWORD MinimapTileColor(TileType tile)
 {

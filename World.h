@@ -50,6 +50,8 @@ enum TileType : unsigned char
 
 // A neighborhood: a grid of streets with blocks of houses, parks and
 // hedged lots in between. Every walkable tile is reachable from the start.
+struct RoofSample;   // below
+
 class Map
 {
 public:
@@ -84,6 +86,10 @@ public:
 
     // A path tile next to a house: a front door.
     bool IsFrontDoor(int x, int y) const;
+
+    // Roof over a house at world point (x, y). False if there's no house there.
+    // Every house gets a hip roof: rising from every edge to a ridge.
+    bool RoofAt(float x, float y, RoofSample& out) const;
 
     // Street-light brightness at a world point: 0 (dark) .. 1 (right under a lamp).
     float LightAt(float x, float y) const;
@@ -123,12 +129,36 @@ private:
     void AddStreetLamps();
     void RemovePockets();           // walkable tiles the start can't reach become hedge
     void BuildLightMap();
+    void BuildRoofs();              // how far each house tile is from its building's edges
 
     unsigned char m_tiles[MAP_MAX_SIZE][MAP_MAX_SIZE];
     unsigned char m_light[MAP_MAX_SIZE * LIGHT_RES][MAP_MAX_SIZE * LIGHT_RES];
+    // House tiles of the same building to the west, east, north, south of each tile.
+    unsigned char m_roofRun[4][MAP_MAX_SIZE][MAP_MAX_SIZE];
     int m_width, m_height;
 };
 
+
+// Rolled per delivery: sets the sky, the haze and the light.
+enum class TimeOfDay
+{
+    Morning,
+    Noon,
+    Sunset,
+    Night,     // street lights on
+    Count
+};
+
+// What the roof is like at one point over a house (see Map::RoofAt).
+struct RoofSample
+{
+    float rise;     // height above the top of the walls (wall heights)
+    float edge;     // distance in from the nearest roof edge (tiles)
+    float edge2;    // distance to the second nearest edge (close to 'edge' = ridge / hip line)
+    float along;    // position along that edge (for the shingle pattern)
+    int   facet;    // which way this part slopes: 0 west, 1 east, 2 north, 3 south
+    int   type;     // house color 0..3
+};
 
 // One delivery offered on the select screen.
 struct Contract
@@ -140,7 +170,8 @@ struct Contract
     int  reward;              // paid when you get back to the start
     bool express;             // one stop is timed
     int  expressBonus;        // extra pay if that stop is reached in time
-    bool night;               // night (street lights on) or day
+    TimeOfDay time;           // morning / noon / sunset / night
+    bool night;               // time == Night (street lights on)
 };
 
 // Fills 'out' with DELIVERY_CHOICES random contracts.

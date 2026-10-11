@@ -5,6 +5,7 @@
 
 class Map;
 class Player;
+enum class TimeOfDay;
 class Enemy;
 class DeliveryRun;
 
@@ -25,6 +26,7 @@ public:
     bool Load(const wchar_t* fileName);
 
     bool IsLoaded() const { return m_pixels != nullptr; }
+    void Clear() { Free(); }   // back to "no picture"
 
     // For pictures made in code: make an empty (transparent) image,
     // set pixels, then call FinishEdits().
@@ -53,6 +55,40 @@ private:
     DWORD* m_pixels;
     unsigned char* m_alpha;
     int            m_x0, m_y0, m_x1, m_y1;   // visible box
+};
+
+
+// =====================================================
+// How a sprite is bent for the walk animation (fake frames
+// made from one picture).
+// =====================================================
+struct SpritePose
+{
+    float stretchX = 1.0f;   // wider (>1) / thinner (<1)
+    float stretchY = 1.0f;   // taller (>1) / shorter (<1)
+    float lean = 0.0f;   // top slides sideways by this much of the width (+ right)
+};
+
+
+// Fakes a walk cycle from one picture: hops, squashes on landing,
+// stretches on the way up and leans side to side every step.
+// Steps follow distance moved, so running = quicker steps.
+class WalkCycle
+{
+public:
+    // moved: distance this frame (tiles). canWalk: false while flying,
+    // stunned... (the animation settles down smoothly).
+    void Update(float dt, float moved, float stepsPerTile, bool canWalk);
+
+    float      Lift() const;       // hop height, in wall heights
+    SpritePose Pose() const;
+    bool       OddStep() const;    // flips every step (mirror the back view = waddle)
+    int        StepCount() const;  // goes up by one each time a foot lands
+    bool       IsWalking() const { return m_amount > 0.5f; }
+
+private:
+    float m_phase = 0.0f;   // one step = pi
+    float m_amount = 0.0f;   // 0 standing .. 1 walking
 };
 
 
@@ -87,10 +123,15 @@ class Renderer
 {
 public:
     Renderer();   // draws the prop pictures (trees, bushes, ...)
+    ~Renderer();
 
-    // Night: dusk sky, lit windows, street lights on. Day: blue sky, lights off.
-    void SetNight(bool night);
+    // Time of day + a seed: paints a new sky (with skyline) and sets the
+    // haze and light. Night also means lit windows and street lights on.
+    void SetSky(TimeOfDay time, unsigned seed);
     bool IsNight() const { return m_night; }
+
+    // Moves the clouds along. Call once per frame.
+    void AdvanceSky(float dt);
 
     void DrawWorld(DWORD* pixels, const Map& map, const Camera& cam);
 
@@ -108,9 +149,10 @@ public:
     // mirror: flip left-right. fade: 0 invisible .. 1 solid.
     // light: street-light brightness there (0..1), tints it warm.
     // lift: float it this far above the floor, in wall heights (hearts over dogs).
+    // pose: squash/stretch and lean for the walk animation (nullptr = none).
     void DrawSprite(DWORD* pixels, const Camera& cam, float worldX, float worldY,
         const Texture& texture, float scale, bool mirror, float fade,
-        float light = 0.0f, float lift = 0.0f);
+        float light = 0.0f, float lift = 0.0f, const SpritePose* pose = nullptr);
 
     // A soft glowing ball (the head of a street lamp).
     // height: how high above the floor, in wall heights. radius: same units.
@@ -130,7 +172,22 @@ public:
         float time);
 
 private:
+    Renderer(const Renderer&);              // not copyable (owns the sky)
+    Renderer& operator=(const Renderer&);
+
+    // Roofs in one screen column: marches the ray on from 'startDist' (where it
+    // hit a house wall whose top is at row 'wallTop') and paints every bit of
+    // roof that rises above what's already drawn, near to far.
+    void DrawRoofColumn(DWORD* pixels, int x, const Map& map, const Camera& cam,
+        float rayX, float rayY, float startDist, float wallTop);
+
     Texture m_tree, m_bush, m_flowers, m_lampOn, m_lampOff;
+
+    // Sky panorama layers (SKY_PANO_W x SCREEN_H/2 each), see PaintSky.
+    DWORD* m_skyBase;
+    DWORD* m_skyClouds;
+    DWORD* m_skyline;
+    float  m_cloudOffset;   // pixels the clouds have drifted
 
     bool  m_night;
     DWORD m_hazeColor;   // what far things fade into

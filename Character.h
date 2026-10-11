@@ -17,6 +17,7 @@ enum class AbilityType
     None,
     GroundPound,   // jump up, slam down, knock nearby dogs back
     FurBarrage,    // a few seconds of shooting fur balls that stun dogs
+    Dash,          // float up and zip forward the way you're looking
     Count
 };
 
@@ -51,6 +52,8 @@ struct CharacterInfo
     const wchar_t* spriteBack;       // walking straight / standing
     const wchar_t* spriteBackSide;   // walking diagonally (faces right)
     const wchar_t* spriteSide;       // strafing, and the select screen (faces right)
+    const wchar_t* spriteSideLeft;   // facing left, if it differs (nullptr = mirror spriteSide)
+    const wchar_t* spriteAbility;    // pose while the ability is going (nullptr = none)
 };
 
 const CharacterInfo& GetCharacterInfo(CharacterType type);
@@ -78,15 +81,27 @@ public:
     float ActiveFraction() const;      // 1 = just started .. 0 = over
     float CooldownFraction() const;   // 1 = just used .. 0 = ready
 
+    // Off the ground (ground pound jump or mid-dash): can't be bitten.
+    bool  IsAirborne() const { return m_airTime > 0.0f || m_dashTime > 0.0f; }
+    float Height() const;              // how high off the ground, in wall heights
+
     // Ground pound
-    bool  IsAirborne() const { return m_airTime > 0.0f; }
     float JumpHeight() const;          // in wall heights, 0 on the ground
     bool  JustLanded() const { return m_justLanded; }   // true for one frame: SLAM
+
+    // Dash
+    bool  IsDashing() const { return m_dashTime > 0.0f; }
+
+    // Can't be bitten: in the air, mid-dash, or just after a dash.
+    bool  IsInvulnerable() const { return IsAirborne() || m_dashGrace > 0.0f; }
+    float DashTimeLeft() const { return m_dashTime; }
 
 private:
     AbilityType m_type = AbilityType::None;
     float       m_cooldown = 0.0f;   // seconds left
     float       m_airTime = 0.0f;   // seconds left in the air
     float       m_activeTime = 0.0f;   // seconds left of an ability that lasts
+    float       m_dashTime = 0.0f;   // seconds left of a dash
+    float       m_dashGrace = 0.0f;   // seconds of safety left after a dash
     bool        m_justLanded = false;
 };

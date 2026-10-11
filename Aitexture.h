@@ -10,7 +10,8 @@
 //    - walls:   houses (siding, roof trim, windows, front doors),
 //               hedges, wooden fences
 //    - floors:  asphalt with dashed center lines, concrete paths, grass
-//    - sky:     dusk gradient
+//    - sky:     time-of-day gradients, sun, moon, stars, clouds,
+//               and the city skyline on the horizon
 //    - props:   tree, bush, flower patch, street lamp
 //    - dogs:    the placeholder "angry blob" until real dog art exists
 //    - UI:      the heart icon, the minimap colors
@@ -70,12 +71,30 @@ DWORD HedgeTopColor(float fx, float fy);
 // Color of the ground at world point (fx, fy).
 DWORD FloorColor(const Map& map, float fx, float fy);
 
-// Sky color, t = 0 at the top of the screen .. 1 at the horizon.
-DWORD SkyColor(float t, bool night);
+// ----- Sky (one look per time of day) -----
 
-// The haze far things fade into, and how far you can see.
-DWORD HazeColor(bool night);
-float HazeDistance(bool night);
+struct SkyLook
+{
+    DWORD haze;       // what far things fade into (matches the sky at the horizon)
+    float hazeDist;   // how far you can see
+    DWORD tint;       // light color on the whole world (0xFFFFFF = none)
+};
+SkyLook GetSkyLook(TimeOfDay time);
+
+// The sky is a 360 degree panorama, painted once per delivery.
+// Width covers a full turn (about 1 pixel per screen pixel); height = rows
+// from the top of the screen down to the horizon.
+const int SKY_PANO_W = 3456;
+
+// Paints the panorama in three layers (each w * h pixels, row 0 = top):
+//   base:    gradient, sun or moon, stars
+//   clouds:  drifting clouds       (0 = see-through, else 0xFF000000 | color)
+//   skyline: buildings + rooftops  (0 = see-through, else 0xFF000000 | color)
+// Same seed = same sky; each delivery gets a new one.
+void PaintSky(TimeOfDay time, unsigned seed, DWORD* base, DWORD* clouds, DWORD* skyline, int w, int h);
+
+// The sloped roof surface at one point (see RoofSample in World.h).
+DWORD RoofColor(const RoofSample& r);
 
 // Minimap color for a tile.
 DWORD MinimapTileColor(TileType tile);

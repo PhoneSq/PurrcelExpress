@@ -52,8 +52,10 @@ public:
     void SetCharacter(CharacterType type);
 
     // ----- Ability (E) -----
-    bool           UseAbility() { return m_ability.TryStart(); }
+    bool           UseAbility();      // E. False if it's not ready.
     const Ability& GetAbility() const { return m_ability; }
+    float          DashDirX() const { return m_dashDirX; }
+    float          DashDirY() const { return m_dashDirY; }
     void Update(float dt, const Input& input, const Map& map);
 
     float X() const { return m_x; }
@@ -101,4 +103,5 @@ private:
     float   m_invuln;   // seconds of invincibility left
 
     Ability m_ability;
+    float   m_dashDirX, m_dashDirY;   // locked in when the dash starts (where you were looking)
 };
