@@ -10,10 +10,10 @@
 // STAMINA
 // =====================================================
 
-void Stamina::Reset(float multiplier)
+void Stamina::Reset(float maxSeconds)
 {
-    m_max = STAMINA_MAX_SECONDS * multiplier;
-    m_recover = STAMINA_RECOVER_RATE * multiplier;
+    m_max = maxSeconds;
+    m_recover = STAMINA_RECOVER_RATE;
     m_current = m_max;
     m_regenDelay = 0.0f;
     m_exhausted = false;
@@ -67,8 +67,17 @@ float Stamina::Fraction() const
 // =====================================================
 
 Player::Player()
+    : m_maxHp(PLAYER_MAX_HP), m_speed(MOVE_SPEED), m_staminaSeconds(STAMINA_MAX_SECONDS)
 {
     Reset(1.5f, 1.5f);
+}
+
+void Player::SetStats(const RunStats& stats)
+{
+    m_maxHp = stats.maxHp < 1 ? 1 : stats.maxHp;
+    m_speed = stats.moveSpeed;
+    m_staminaSeconds = stats.staminaSeconds;
+    m_ability.SetCooldownScale(stats.cooldownScale);
 }
 
 void Player::Reset(float x, float y)
@@ -76,10 +85,10 @@ void Player::Reset(float x, float y)
     m_x = x;         m_y = y;
     m_dirX = 1.0f;   m_dirY = 0.0f;
     m_planeX = 0.0f; m_planeY = 0.66f;
-    m_stamina.Reset();
+    m_stamina.Reset(m_staminaSeconds);
     m_sprinting = false;
     m_forwardInput = m_strafeInput = 0.0f;
-    m_hp = PLAYER_MAX_HP;
+    m_hp = m_maxHp;
     m_invuln = 0.0f;
     m_ability.Reset(m_ability.Type());   // same ability, fresh cooldown
     m_dashDirX = 1.0f; m_dashDirY = 0.0f;
@@ -107,7 +116,7 @@ bool Player::TakeHit()
 
 bool Player::Heal()
 {
-    if (m_hp >= PLAYER_MAX_HP) return false;
+    if (m_hp >= m_maxHp) return false;
     ++m_hp;
     return true;
 }
@@ -175,7 +184,7 @@ void Player::Update(float dt, const Input& input, const Map& map)
     if (moving)
     {
         // Normalized, so diagonal movement isn't faster than straight.
-        float speed = MOVE_SPEED * (m_sprinting ? SPRINT_MULTIPLIER : 1.0f) * dt;
+        float speed = m_speed * (m_sprinting ? SPRINT_MULTIPLIER : 1.0f) * dt;
         Move(mx / len * speed, my / len * speed, map);
     }
 }

@@ -173,6 +173,37 @@ private:
 };
 
 
+// After a finished delivery: three perk bubbles to pick from, or take
+// the money instead. Then on to the next delivery.
+class PerkScreen : public Screen
+{
+public:
+    explicit PerkScreen(GameData& data);
+    ~PerkScreen();
+
+    void      Enter() override;
+    GameState Update(float dt, const Input& input) override;
+    void      Render(Frame& frame) override;
+
+private:
+    RECT BubbleRect(int index) const;
+    int  HitTest(int x, int y) const;   // bubble index, m_count (= the money) or -1
+    GameState Pick(int index);
+
+    GameData& m_data;
+    PerkType  m_choices[PERK_CHOICES];
+    int       m_count;          // bubbles on screen (fewer if few perks can be taken)
+    int       m_selected;       // 0..m_count-1 = a bubble, m_count = the money
+    int       m_lastMouseX, m_lastMouseY;
+    RECT      m_moneyButton;
+    Texture   m_icons[(int)PerkType::Count];
+
+    HFONT m_titleFont;
+    HFONT m_nameFont;
+    HFONT m_textFont;
+};
+
+
 // One delivery: visit every stop, then get back to the start.
 class RunScreen : public Screen, public ItemWorld
 {
@@ -246,7 +277,9 @@ private:
 
     // Dog pictures, one per type (Blue, Yellow, Purple). A type without
     // a picture is drawn as the placeholder blob.
-    Texture m_dogs[3];
+    Texture m_dogs[4];          // Blue, Yellow, Purple, Watchdog
+    Texture m_barkBubble;       // "!!" over a barking watchdog
+    float   m_barkShow[MAX_ENEMIES];   // seconds left showing it, per dog
 
     Texture m_itemIcons[(int)ItemType::Count];   // for the item slot
     Texture m_alertIcon;                         // red "!" when a dog spots you

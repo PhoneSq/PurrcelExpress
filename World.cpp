@@ -44,7 +44,7 @@ static const int ROADWORK_CHANCE = 10;   // a street segment is fenced off
 
 static const float LAMP_RADIUS = 3.2f;     // tiles a street light reaches
 
-Map::Map() : m_width(0), m_height(0)
+Map::Map() : m_width(0), m_height(0), m_theme(Theme::Suburb)
 {
     Random rng(12345);
     Generate(MAP_BASE_SIZE, rng);
@@ -473,6 +473,17 @@ void RollContracts(Contract* out, Random& rng)
             roll -= TIME_OF_DAY_WEIGHTS[t];
         }
         c.night = c.time == TimeOfDay::Night;
+
+        // Neighborhood style, by weight.
+        int themeTotal = 0;
+        for (int t = 0; t < (int)Theme::Count; ++t) themeTotal += THEME_WEIGHTS[t];
+        int themeRoll = rng.Range(0, themeTotal - 1);
+        c.theme = Theme::Suburb;
+        for (int t = 0; t < (int)Theme::Count; ++t)
+        {
+            if (themeRoll < THEME_WEIGHTS[t]) { c.theme = (Theme)t; break; }
+            themeRoll -= THEME_WEIGHTS[t];
+        }
         c.express = c.stops >= 2 && rng.Chance(EXPRESS_CHANCE);
         c.expressBonus = c.express ? ((c.reward / 2 + 5) / 10) * 10 : 0;
     }
@@ -727,6 +738,23 @@ bool Map::RoofAt(float x, float y, RoofSample& out) const
     out.along = (facet < 2) ? y : x;
     out.rise = best * ROOF_SLOPE;
     if (out.rise > ROOF_MAX_RISE) out.rise = ROOF_MAX_RISE;
+    if (m_theme == Theme::Asia)
+    {
+        // Curved (concave) roof: gentle near the eaves, steep up at the ridge,
+        // so the eaves look like they sweep outwards. Same height at the top.
+        // The peak this building reaches (half its narrow side), so the roof
+        // keeps its height and only the profile bends.
+        float spanX = (m_roofRun[0][ty][tx] + m_roofRun[1][ty][tx] + 1) * 0.5f;
+        float spanY = (m_roofRun[2][ty][tx] + m_roofRun[3][ty][tx] + 1) * 0.5f;
+        float peak = (spanX < spanY ? spanX : spanY) * ROOF_SLOPE;
+        if (peak > ROOF_MAX_RISE) peak = ROOF_MAX_RISE;
+        if (peak > 0.001f)
+        {
+            float s = out.rise / peak;                   // 0 eave .. 1 top
+            if (s > 1.0f) s = 1.0f;
+            out.rise = peak * powf(s, ASIA_ROOF_CURVE);
+        }
+    }
     out.type = self - TILE_HOUSE1;
     return true;
 }

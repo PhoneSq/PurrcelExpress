@@ -78,6 +78,7 @@ static float Length(Sfx id)
     case Sfx::GroundPound: return 0.55f;
     case Sfx::FurShot:     return 0.16f;
     case Sfx::Step:        return 0.07f;
+    case Sfx::Bark:        return 0.40f;
     default:               return 0.1f;
     }
 }
@@ -86,6 +87,7 @@ static void Recipe(Sfx id, float* f, int n)
 {
     Noise noise;
     LowPass lp, lp2;
+    BandPass bp;
     float phase = 0.0f;
     const float T = (float)n / SOUND_RATE;
 
@@ -198,6 +200,28 @@ static void Recipe(Sfx id, float* f, int n)
             phase += TWO_PI * freq / SOUND_RATE;
             float env = Attack(t, 0.003f) * expf(-t * 55.0f);
             s = (sinf(phase) + 0.12f * sinf(3.0f * phase)) * env;   // soft, round
+            break;
+        }
+        case Sfx::Bark:
+        {
+            // "Wan wan!": two short barks, the second a little lower. Each
+            // starts with a yelp (pitch flicks up then falls), a puff of
+            // breath noise at the start, and a vowel-ish formant on top.
+            float s2 = 0.0f;
+            for (int k = 0; k < 2; ++k)
+            {
+                float tb = t - k * 0.20f;
+                if (tb < 0.0f || tb > 0.15f) continue;
+                float base = (k == 0) ? 560.0f : 500.0f;
+                float freq = base * (1.0f + 0.35f * expf(-tb * 45.0f)) * (1.0f - 0.35f * tb / 0.15f);
+                float ph = TWO_PI * freq * tb;
+                float env = Attack(tb, 0.004f) * expf(-tb * 13.0f) * Clamp01((0.15f - tb) / 0.03f);
+                float voice = Buzz(ph, 3.5f) + 0.5f * Buzz(2.0f * ph, 2.0f);
+                float breath = noise.Next() * expf(-tb * 90.0f) * 0.6f;
+                s2 += (voice + breath) * env;
+            }
+            float formant = bp.Run(s2, 1150.0f, 0.6f);
+            s = lp.Run(s2 * 0.5f + formant * 1.4f, 3200.0f);
             break;
         }
         default: break;

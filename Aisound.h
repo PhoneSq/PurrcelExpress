@@ -27,6 +27,7 @@ enum class Sfx
     GroundPound,    // deep thump
     FurShot,        // "pew"
     Step,           // soft padded paw step (played quietly, pitch varied)
+    Bark,           // watchdog: "wan wan!" (two short barks)
     Count
 };
 

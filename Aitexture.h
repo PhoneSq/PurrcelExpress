@@ -13,6 +13,9 @@
 //    - sky:     time-of-day gradients, sun, moon, stars, clouds,
 //               and the city skyline on the horizon
 //    - props:   tree, bush, flower patch, street lamp
+//    - Asia theme: timber + plaster houses, curved tile roofs, stone
+//               streets, gravel paths, mountains and mist, cherry trees,
+//               azaleas, hydrangeas, paper lanterns
 //    - dogs:    the placeholder "angry blob" until real dog art exists
 //    - UI:      the heart icon, the minimap colors
 //
@@ -51,6 +54,14 @@ inline DWORD Scale(DWORD c, float k)
 {
     return Rgb((int)(((c >> 16) & 255) * k), (int)(((c >> 8) & 255) * k), (int)((c & 255) * k));
 }
+
+
+// ----- Map theme -----
+
+// Which art set the world functions below draw with (suburb / asian old
+// town). Set once per delivery, before the sky or props are made.
+void  SetArtTheme(Theme t);
+Theme GetArtTheme();
 
 
 // ----- Walls, floors, sky -----
@@ -105,6 +116,7 @@ void MakeTree(Texture& t);
 void MakeBush(Texture& t);
 void MakeFlowers(Texture& t);
 void MakeLamp(Texture& t, bool lit);   // lit = glass glowing (night)
+// (all four follow the current art theme)
 
 
 // ----- Dogs (placeholder look) -----
@@ -127,6 +139,15 @@ void MakeBone(Texture& t);
 
 // Little heart floating over a dog that's after a bone.
 void MakeHeart(Texture& t);
+
+// Spiky white shout bubble with a red "!!" over a barking watchdog.
+void MakeBarkBubble(Texture& t);
+
+// Perk icons (the heart is reused for Extra Life):
+void MakeSpeedIcon(Texture& t);     // Zoomies: blue ">>" with speed lines
+void MakeStaminaIcon(Texture& t);   // Big Lungs: green lightning bolt
+void MakeFishIcon(Texture& t);      // Chonky: a fat orange fish
+void MakeClockIcon(Texture& t);     // Quick Paws: purple stopwatch
 
 // Dumbbell: the ground pound ability icon.
 void MakeDumbbell(Texture& t);

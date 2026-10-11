@@ -95,6 +95,7 @@ Enemy::Enemy()
     m_homeX(0), m_homeY(0), m_avoidX(-1000.0f), m_avoidY(-1000.0f),
     m_mode(Mode::Roam), m_lureX(0), m_lureY(0), m_lureTimer(0),
     m_knockVX(0), m_knockVY(0), m_knockTime(0), m_stun(0), m_justSpotted(false),
+    m_lookAngle(0), m_lookGoal(0), m_glanceTimer(0), m_barkTimer(0), m_seesPlayer(false), m_justBarked(false),
     m_roamPause(0), m_rng(1)
 {
 }
@@ -121,6 +122,18 @@ void Enemy::Spawn(float x, float y, EnemyType type, float avoidX, float avoidY)
     m_rng = (unsigned)m_homeX * 73856093u ^ (unsigned)m_homeY * 19349663u ^ ((unsigned)type + 1) * 83492791u;
     if (m_rng == 0) m_rng = 1;
     m_roamPause = (NextRandom() % 100) / 100.0f * DOG_ROAM_PAUSE_MAX;   // don't all start at once
+
+    m_lookAngle = m_lookGoal = (NextRandom() % 628) / 100.0f;
+    m_glanceTimer = WATCH_GLANCE_MIN;
+    m_barkTimer = 0.0f;
+    m_seesPlayer = m_justBarked = false;
+}
+
+void Enemy::HearBark()
+{
+    if (IsWatchdog()) return;
+    if (m_mode == Mode::Lured || m_mode == Mode::Chase) return;
+    Spot();
 }
 
 void Enemy::Knockback(float fromX, float fromY)
@@ -175,6 +188,7 @@ void Enemy::ReturnHome(float dt, const Map& map, const Enemy* all, int count)
     int tx = (int)m_x, ty = (int)m_y;
     bool inArea = tx >= m_homeX - DOG_ROAM_RADIUS && tx <= m_homeX + DOG_ROAM_RADIUS &&
         ty >= m_homeY - DOG_ROAM_RADIUS && ty <= m_homeY + DOG_ROAM_RADIUS;
+    if (IsWatchdog()) inArea = (tx == m_homeX && ty == m_homeY);   // right back to its post
     if (inArea)
     {
         m_mode = Mode::Roam;
@@ -208,14 +222,11 @@ unsigned Enemy::NextRandom()
     return m_rng;
 }
 
-bool Enemy::CanSee(const Map& map, const Player& player) const
+bool Enemy::ClearLine(const Map& map, float x, float y) const
 {
-    float dx = player.X() - m_x, dy = player.Y() - m_y;
-    float dist = sqrtf(dx * dx + dy * dy);
-    if (dist > DOG_SPOT_RANGE) return false;
-    if (!DOG_NEEDS_SIGHT) return true;
-
     // Walk the line in small steps; houses and fences block, hedges are low.
+    float dx = x - m_x, dy = y - m_y;
+    float dist = sqrtf(dx * dx + dy * dy);
     int steps = (int)(dist / 0.1f) + 1;
     for (int i = 1; i < steps; ++i)
     {
@@ -224,6 +235,80 @@ bool Enemy::CanSee(const Map& map, const Player& player) const
         if (map.IsSolid(tx, ty) && !Map::IsLowWall(map.TileAt(tx, ty))) return false;
     }
     return true;
+}
+
+bool Enemy::CanSee(const Map& map, const Player& player) const
+{
+    float dx = player.X() - m_x, dy = player.Y() - m_y;
+    float dist = sqrtf(dx * dx + dy * dy);
+    if (dist > DOG_SPOT_RANGE) return false;
+    if (!DOG_NEEDS_SIGHT) return true;
+    return ClearLine(map, player.X(), player.Y());
+}
+
+// Smallest signed difference between two angles (-pi .. pi).
+static float AngleDiff(float a, float b)
+{
+    float d = fmodf(a - b, 6.2831853f);
+    if (d > 3.14159265f) d -= 6.2831853f;
+    if (d < -3.14159265f) d += 6.2831853f;
+    return d;
+}
+
+bool Enemy::CanSeeInCone(const Map& map, const Player& player) const
+{
+    float dx = player.X() - m_x, dy = player.Y() - m_y;
+    float dist = sqrtf(dx * dx + dy * dy);
+    if (dist > WATCH_RANGE) return false;
+    if (dist > WATCH_CLOSE_RANGE && fabsf(AngleDiff(atan2f(dy, dx), m_lookAngle)) > WATCH_HALF_ANGLE)
+        return false;
+    return ClearLine(map, player.X(), player.Y());
+}
+
+void Enemy::Watch(float dt, const Map& map, const Player& player)
+{
+    bool saw = m_seesPlayer;
+    m_seesPlayer = CanSeeInCone(map, player);
+
+    float turnSpeed = WATCH_TURN_SPEED;
+    if (m_seesPlayer)
+    {
+        // Keep its eyes on you, and bark (right away, then every BARK_REPEAT).
+        m_lookGoal = atan2f(player.Y() - m_y, player.X() - m_x);
+        turnSpeed = WATCH_TRACK_SPEED;
+        if (!saw) m_barkTimer = 0.0f;
+        m_barkTimer -= dt;
+        if (m_barkTimer <= 0.0f)
+        {
+            m_justBarked = true;
+            m_barkTimer = BARK_REPEAT;
+        }
+        m_glanceTimer = 1.0f;   // once you're gone it stares where it lost you for a second
+    }
+    else
+    {
+        // Looking around: hold a direction for a bit, then turn somewhere new.
+        m_glanceTimer -= dt;
+        if (m_glanceTimer <= 0.0f)
+        {
+            float turn = 1.0f + (NextRandom() % 160) / 100.0f;          // 1.0 .. 2.6 radians
+            m_lookGoal = m_lookAngle + ((NextRandom() & 1) ? turn : -turn);
+            float t = (NextRandom() % 1000) / 1000.0f;
+            m_glanceTimer = WATCH_GLANCE_MIN + (WATCH_GLANCE_MAX - WATCH_GLANCE_MIN) * t;
+        }
+    }
+
+    // Turn toward the goal.
+    float diff = AngleDiff(m_lookGoal, m_lookAngle);
+    float step = turnSpeed * dt;
+    if (fabsf(diff) <= step) m_lookAngle = m_lookGoal;
+    else                     m_lookAngle += (diff > 0.0f ? step : -step);
+    m_lookAngle = fmodf(m_lookAngle, 6.2831853f);
+    if (m_lookAngle < 0.0f) m_lookAngle += 6.2831853f;
+
+    // Face the way it's looking (the sprite flips by the move direction).
+    m_moveX = cosf(m_lookAngle) * 0.01f;
+    m_moveY = sinf(m_lookAngle) * 0.01f;
 }
 
 bool Enemy::PickRoamTarget(const Map& map, const Enemy* all, int count)
@@ -448,6 +533,8 @@ void Enemy::Update(float dt, const Map& map, const Player& player,
     const Enemy* all, int count)
 {
     m_justSpotted = false;
+    m_justBarked = false;
+    if (IsWatchdog() && m_mode != Mode::Roam) m_seesPlayer = false;
 
     // Flying from a ground pound (stops at walls), then dazed.
     if (m_knockTime > 0.0f)
@@ -465,6 +552,7 @@ void Enemy::Update(float dt, const Map& map, const Player& player,
     if (m_stun > 0.0f)
     {
         m_stun -= dt;
+        m_seesPlayer = false;   // seeing stars, not cats
         return;
     }
 
@@ -485,17 +573,19 @@ void Enemy::Update(float dt, const Map& map, const Player& player,
             return;
         }
         // Bone's gone: you again if you're close, otherwise home.
-        if (CanSee(map, player)) { Spot(); break; }
+        // (A watchdog always goes back to its post.)
+        if (!IsWatchdog() && CanSee(map, player)) { Spot(); break; }
         m_mode = Mode::ReturnHome;
         m_targetX = m_targetY = m_nextX = m_nextY = -1;
         return;
 
     case Mode::ReturnHome:
-        if (CanSee(map, player)) { Spot(); break; }
+        if (!IsWatchdog() && CanSee(map, player)) { Spot(); break; }
         ReturnHome(dt, map, all, count);
         return;
 
     case Mode::Roam:
+        if (IsWatchdog()) { Watch(dt, map, player); return; }   // stays at its post
         if (CanSee(map, player)) { Spot(); break; }
         Roam(dt, map, all, count);
         return;

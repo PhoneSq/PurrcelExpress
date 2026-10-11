@@ -6,6 +6,7 @@
 // =====================================================
 
 #include "Character.h"
+#include "Item.h"       // RunStats
 
 class Input;
 class Map;
@@ -17,9 +18,8 @@ class Map;
 class Stamina
 {
 public:
-    // Full bar. multiplier 1.0 = normal (an upgrade can raise it later:
-    // bigger bar and faster refill).
-    void Reset(float multiplier = 1.0f);
+    // Full bar holding 'maxSeconds' of sprint (perks can make it bigger).
+    void Reset(float maxSeconds = STAMINA_MAX_SECONDS);
 
     // wantsSprint = SHIFT held while moving.
     // Returns true if the player really sprints this frame.
@@ -51,6 +51,10 @@ public:
     // Which cat this is (sets the ability). Call before Reset.
     void SetCharacter(CharacterType type);
 
+    // This run's numbers (perks): speed, max HP, sprint time, cooldown.
+    // Call before Reset.
+    void SetStats(const RunStats& stats);
+
     // ----- Ability (E) -----
     bool           UseAbility();      // E. False if it's not ready.
     const Ability& GetAbility() const { return m_ability; }
@@ -70,6 +74,7 @@ public:
 
     // ----- Health (whole hit points) -----
     int  Hp() const { return m_hp; }
+    int  MaxHp() const { return m_maxHp; }
     bool IsInvulnerable() const { return m_invuln > 0.0f; }
 
     // Takes 1 HP unless still invulnerable from the last hit
@@ -100,6 +105,9 @@ private:
     float   m_forwardInput, m_strafeInput;
 
     int     m_hp;
+    int     m_maxHp;
+    float   m_speed;            // tiles per second, walking
+    float   m_staminaSeconds;   // size of the sprint bar
     float   m_invuln;   // seconds of invincibility left
 
     Ability m_ability;

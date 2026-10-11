@@ -169,7 +169,7 @@ Game::Game()
     : m_hwnd(nullptr),
     m_state(GameState::MainMenu),
     m_backDC(nullptr), m_backBitmap(nullptr), m_oldBitmap(nullptr),
-    m_mainMenu(nullptr), m_characterSelect(nullptr), m_deliverySelect(nullptr), m_shop(nullptr), m_run(nullptr), m_gameOver(nullptr)
+    m_mainMenu(nullptr), m_characterSelect(nullptr), m_deliverySelect(nullptr), m_shop(nullptr), m_run(nullptr), m_perkPick(nullptr), m_gameOver(nullptr)
 {
     m_frame.pixels = nullptr;
     m_frame.dc = nullptr;
@@ -187,6 +187,7 @@ Game::~Game()
     delete m_deliverySelect;
     delete m_shop;
     delete m_run;
+    delete m_perkPick;
     delete m_gameOver;
 
     if (m_backDC)
@@ -232,6 +233,7 @@ bool Game::Init(HWND hwnd)
     m_deliverySelect = new DeliverySelectScreen(m_data);
     m_shop = new ShopScreen(m_data);
     m_run = new RunScreen(m_data);
+    m_perkPick = new PerkScreen(m_data);
     m_gameOver = new GameOverScreen();
 
     Audio::Get().Init();   // no sound device = silent, the game still runs
@@ -249,6 +251,7 @@ Screen* Game::ScreenFor(GameState state) const
     case GameState::DeliverySelect: return m_deliverySelect;
     case GameState::Shop:           return m_shop;
     case GameState::Run:      return m_run;
+    case GameState::PerkPick: return m_perkPick;
     case GameState::GameOver: return m_gameOver;
     default:                  return nullptr;
     }
@@ -260,6 +263,10 @@ void Game::SwitchTo(GameState next)
     // has the bite sound.
     bool caught = (m_state == GameState::Run && next == GameState::GameOver);
     if (!caught && next != GameState::Quit) Audio::Get().Play(Sfx::Click);
+
+    // The run is over (caught), or a new one starts from the menu: perks go.
+    if (caught || (m_state == GameState::MainMenu && next == GameState::CharacterSelect))
+        m_data.stats = RunStats();
 
     m_state = next;
 

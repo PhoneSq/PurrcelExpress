@@ -6,6 +6,7 @@
 class Map;
 class Player;
 enum class TimeOfDay;
+enum class Theme;
 class Enemy;
 class DeliveryRun;
 
@@ -129,6 +130,17 @@ public:
     // Time of day + a seed: paints a new sky (with skyline) and sets the
     // haze and light. Night also means lit windows and street lights on.
     void SetSky(TimeOfDay time, unsigned seed);
+    // Map style: switches the art set and redraws the prop sprites.
+    // Call before SetSky (the sky depends on it too).
+    void SetTheme(Theme theme);
+    // Where the street lamp's light sits (wall heights up) and its color.
+    void LampGlow(float& height, DWORD& color) const;
+
+    // Watchdog view cones: painted on the ground in the 3D view and drawn on
+    // the minimap. Clear, then add one per watching dog, before DrawWorld.
+    // alarmed = it sees you (red instead of yellow).
+    void ClearViewCones() { m_coneCount = 0; }
+    void AddViewCone(const Map& map, float x, float y, float angle, bool alarmed);
     bool IsNight() const { return m_night; }
 
     // Moves the clouds along. Call once per frame.
@@ -191,6 +203,16 @@ private:
     float  m_cloudOffset;   // pixels the clouds have drifted
 
     bool  m_night;
+    Theme m_theme;
+
+    // Watchdog cones: 'reach' = how far each ray across the cone gets before
+    // a house or fence blocks it.
+    static const int MAX_CONES = 4;
+    static const int CONE_RAYS = 33;
+    struct ViewCone { float x, y, angle; bool alarmed; float reach[CONE_RAYS]; };
+    ViewCone m_cones[MAX_CONES];
+    int      m_coneCount;
+    DWORD ConeTint(DWORD c, float fx, float fy) const;
     DWORD m_hazeColor;   // what far things fade into
     float m_hazeDist;    // how far you can see
 

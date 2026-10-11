@@ -52,6 +52,16 @@ enum TileType : unsigned char
 // hedged lots in between. Every walkable tile is reachable from the start.
 struct RoofSample;   // below
 
+// Rolled per delivery: which kind of neighborhood it is. Changes the art
+// (houses, roofs, ground, props, sky) and the roof shape; the layout and
+// the gameplay stay the same.
+enum class Theme
+{
+    Suburb,    // normal houses and streets, city skyline
+    Asia,      // old town: timber + plaster houses, curved tile roofs, mountains and mist
+    Count
+};
+
 class Map
 {
 public:
@@ -60,6 +70,10 @@ public:
     // Builds a random neighborhood about 'size' tiles across
     // (snapped to fit whole blocks, see MapSizeFor).
     void Generate(int size, Random& rng);
+
+    // Art style + roof shape for this map. Set before drawing (default Suburb).
+    void  SetTheme(Theme t) { m_theme = t; }
+    Theme GetTheme() const { return m_theme; }
 
     int Width()  const { return m_width; }
     int Height() const { return m_height; }
@@ -136,6 +150,7 @@ private:
     // House tiles of the same building to the west, east, north, south of each tile.
     unsigned char m_roofRun[4][MAP_MAX_SIZE][MAP_MAX_SIZE];
     int m_width, m_height;
+    Theme m_theme;
 };
 
 
@@ -171,6 +186,7 @@ struct Contract
     bool express;             // one stop is timed
     int  expressBonus;        // extra pay if that stop is reached in time
     TimeOfDay time;           // morning / noon / sunset / night
+    Theme theme;              // suburb / asian old town
     bool night;               // time == Night (street lights on)
 };
 

@@ -19,6 +19,7 @@ enum class GameState
     DeliverySelect,
     Shop,
     Run,
+    PerkPick,  // after a finished delivery: pick a perk (or take the money)
     GameOver,
     Quit      // not a screen: tells the loop to exit
 };
@@ -38,6 +39,9 @@ struct GameData
 
     // The cat picked on the character select screen.
     CharacterType character = CharacterType::CatA;
+
+    // Perks picked so far this run (reset when you get caught or start over).
+    RunStats stats;
 
     // True when the select screen should roll a new list. Set after a
     // delivery; visiting the shop or the menu keeps the same list.
@@ -170,5 +174,6 @@ private:
     Screen* m_deliverySelect;
     Screen* m_shop;
     Screen* m_run;
+    Screen* m_perkPick;
     Screen* m_gameOver;
 };

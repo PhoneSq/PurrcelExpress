@@ -83,7 +83,7 @@ bool Ability::TryStart()
     default:
         return false;
     }
-    m_cooldown = GetAbilityInfo(m_type).cooldown;
+    m_cooldown = CooldownTotal();
     return true;
 }
 
@@ -110,9 +110,14 @@ void Ability::Update(float dt)
     }
 }
 
+float Ability::CooldownTotal() const
+{
+    return GetAbilityInfo(m_type).cooldown * m_cooldownScale;
+}
+
 float Ability::CooldownFraction() const
 {
-    float total = GetAbilityInfo(m_type).cooldown;
+    float total = CooldownTotal();
     if (total <= 0.0f || m_cooldown <= 0.0f) return 0.0f;
     return m_cooldown / total;
 }

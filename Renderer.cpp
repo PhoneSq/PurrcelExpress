@@ -90,8 +90,9 @@ void Renderer::DrawWorld(DWORD* pixels, const Map& map, const Camera& p)
         for (int x = 0; x < SCREEN_W; ++x)
         {
             float light = m_night ? map.LightAt(fx, fy) : 0.0f;
-            pixels[y * SCREEN_W + x] = Fog(Lit(FloorColor(map, fx, fy), light),
-                rowDist * (1.0f - 0.6f * light), m_hazeColor, m_hazeDist);
+            DWORD ground = Lit(FloorColor(map, fx, fy), light);
+            if (m_coneCount) ground = ConeTint(ground, fx, fy);
+            pixels[y * SCREEN_W + x] = Fog(ground, rowDist * (1.0f - 0.6f * light), m_hazeColor, m_hazeDist);
             fx += stepX;
             fy += stepY;
         }
@@ -441,10 +442,32 @@ RECT Renderer::DrawMinimap(DWORD* pixels, const Map& map, const Player& player,
         FillSquare(pixels, toX(s.x), toY(s.y), size, c);
     }
 
-    // Enemies (red)
+    // Watchdog cones: the edges and the far end (cut short by houses).
+    for (int k = 0; k < m_coneCount; ++k)
+    {
+        const ViewCone& v = m_cones[k];
+        DWORD c = v.alarmed ? 0xFF4A3A : 0xFFD24A;
+        for (int i = 0; i < CONE_RAYS; ++i)
+        {
+            float a = v.angle - WATCH_HALF_ANGLE + 2.0f * WATCH_HALF_ANGLE * i / (CONE_RAYS - 1);
+            bool edge = (i == 0 || i == CONE_RAYS - 1);
+            float step = 1.0f / cell;   // about one minimap pixel
+            for (float d = edge ? step : v.reach[i]; d <= v.reach[i] + 0.001f; d += step)
+            {
+                int x = toX(v.x + cosf(a) * d), y = toY(v.y + sinf(a) * d);
+                if (x >= 0 && y >= 0 && x < SCREEN_W && y < SCREEN_H) pixels[y * SCREEN_W + x] = c;
+            }
+        }
+    }
+
+    // Enemies: red (dim = still wandering), watchdogs orange.
     for (int i = 0; i < enemyCount; ++i)
-        FillSquare(pixels, toX(enemies[i].X()), toY(enemies[i].Y()), dot,
-            enemies[i].IsChasing() ? 0xFF2020 : 0x903030);   // dim = still wandering
+    {
+        DWORD c;
+        if (enemies[i].IsWatchdog()) c = enemies[i].SeesPlayer() ? 0xFFB040 : 0xE07A10;
+        else                         c = enemies[i].IsChasing() ? 0xFF2020 : 0x903030;
+        FillSquare(pixels, toX(enemies[i].X()), toY(enemies[i].Y()), dot, c);
+    }
 
     // You: facing line + white dot on top.
     int px = toX(player.X()), py = toY(player.Y());
@@ -880,13 +903,82 @@ Renderer::~Renderer()
     delete[] m_skyline;
 }
 
-Renderer::Renderer()
+void Renderer::SetTheme(Theme theme)
 {
+    m_theme = theme;
+    SetArtTheme(theme);
     MakeTree(m_tree);
     MakeBush(m_bush);
     MakeFlowers(m_flowers);
     MakeLamp(m_lampOn, true);
     MakeLamp(m_lampOff, false);
+}
+
+void Renderer::LampGlow(float& height, DWORD& color) const
+{
+    if (m_theme == Theme::Asia) { height = 0.97f; color = 0xFFA860; }   // the paper lantern up top
+    else { height = 1.07f; color = 0xFFD890; }
+}
+
+// ----- Watchdog view cones -----
+
+void Renderer::AddViewCone(const Map& map, float x, float y, float angle, bool alarmed)
+{
+    if (m_coneCount >= MAX_CONES) return;
+    ViewCone& c = m_cones[m_coneCount++];
+    c.x = x; c.y = y; c.angle = angle; c.alarmed = alarmed;
+    for (int i = 0; i < CONE_RAYS; ++i)
+    {
+        float a = angle - WATCH_HALF_ANGLE + 2.0f * WATCH_HALF_ANGLE * i / (CONE_RAYS - 1);
+        float dx = cosf(a), dy = sinf(a), d = 0.0f;
+        while (d < WATCH_RANGE)
+        {
+            float nd = d + 0.05f;
+            int tx = (int)(x + dx * nd), ty = (int)(y + dy * nd);
+            if (map.IsSolid(tx, ty) && !Map::IsLowWall(map.TileAt(tx, ty))) break;   // same rule as the dog's sight
+            d = nd;
+        }
+        c.reach[i] = d;
+    }
+}
+
+// Ground color with any view cone over it: a soft wash plus a brighter rim.
+DWORD Renderer::ConeTint(DWORD c, float fx, float fy) const
+{
+    for (int k = 0; k < m_coneCount; ++k)
+    {
+        const ViewCone& v = m_cones[k];
+        float dx = fx - v.x, dy = fy - v.y;
+        if (fabsf(dx) > WATCH_RANGE || fabsf(dy) > WATCH_RANGE) continue;
+        float d2 = dx * dx + dy * dy;
+        if (d2 > WATCH_RANGE * WATCH_RANGE || d2 < 0.04f) continue;
+
+        float diff = fmodf(atan2f(dy, dx) - v.angle, 6.2831853f);
+        if (diff > 3.14159265f) diff -= 6.2831853f;
+        if (diff < -3.14159265f) diff += 6.2831853f;
+        float side = WATCH_HALF_ANGLE - fabsf(diff);
+        if (side < 0.0f) continue;
+
+        int bin = (int)((diff + WATCH_HALF_ANGLE) / (2.0f * WATCH_HALF_ANGLE) * (CONE_RAYS - 1) + 0.5f);
+        float d = sqrtf(d2);
+        if (d > v.reach[bin]) continue;
+
+        bool rim = (v.reach[bin] - d < 0.07f) || (d * side < 0.05f);
+        float k2 = rim ? 0.55f : 0.22f;
+        DWORD tint = v.alarmed ? 0xFF4A3A : 0xFFE070;
+        int r = (int)((c >> 16) & 255), g = (int)((c >> 8) & 255), b = (int)(c & 255);
+        int tr = (int)((tint >> 16) & 255), tg = (int)((tint >> 8) & 255), tb = (int)(tint & 255);
+        r += (int)((tr - r) * k2);
+        g += (int)((tg - g) * k2);
+        b += (int)((tb - b) * k2);
+        return (DWORD)(r << 16 | g << 8 | b);
+    }
+    return c;
+}
+
+Renderer::Renderer() : m_theme(Theme::Suburb), m_coneCount(0)
+{
+    SetTheme(Theme::Suburb);
 
     const int skySize = SKY_PANO_W * (SCREEN_H / 2);
     m_skyBase = new DWORD[skySize];

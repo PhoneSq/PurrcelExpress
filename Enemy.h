@@ -20,7 +20,8 @@ enum class EnemyType
 {
     Blue,     // chases the player directly
     Yellow,   // heads for where the player is looking (cuts you off)
-    Purple    // flanks: goes to the opposite side of you from the nearest blue
+    Purple,   // flanks: goes to the opposite side of you from the nearest blue
+    Alert     // watchdog: stays put looking around, barks to call the others
 };
 
 
@@ -41,6 +42,18 @@ public:
     // Has it spotted the player? (Then it keeps chasing until a bone distracts it.)
     bool IsChasing() const { return m_mode == Mode::Chase; }
 
+    // ----- Watchdog -----
+    bool  IsWatchdog() const { return m_type == EnemyType::Alert; }
+    // Where it's looking (radians, world angle) and whether it can see you right now.
+    float LookAngle() const { return m_lookAngle; }
+    bool  SeesPlayer() const { return m_seesPlayer; }
+    // At its post and awake (its view cone counts).
+    bool  IsWatching() const { return IsWatchdog() && m_mode == Mode::Roam && !IsKnockedBack(); }
+    // True for the one frame it barked.
+    bool  JustBarked() const { return m_justBarked; }
+    // A watchdog barked nearby: come running (unless busy with a bone).
+    void  HearBark();
+
     // Busy with a bone at (x, y) for 'seconds': ignores the player, doesn't bite.
     void Lure(float x, float y, float seconds);
     bool IsLured() const { return m_mode == Mode::Lured; }
@@ -57,7 +70,7 @@ public:
     bool IsStunned() const { return m_stun > 0.0f && m_knockTime <= 0.0f; }
 
     // Biting: a dog that just bit sits still for DOG_BITE_COOLDOWN.
-    bool CanBite() const { return m_biteCooldown <= 0.0f && m_mode != Mode::Lured && !IsKnockedBack(); }
+    bool CanBite() const { return !IsWatchdog() && m_biteCooldown <= 0.0f && m_mode != Mode::Lured && !IsKnockedBack(); }
     void OnBite() { m_biteCooldown = DOG_BITE_COOLDOWN; }
 
     // Direction of the last step (for flipping the sprite). Zero if it hasn't moved.
@@ -100,6 +113,12 @@ private:
 
     // Close enough and (if DOG_NEEDS_SIGHT) nothing solid in between?
     bool CanSee(const Map& map, const Player& player) const;
+    // Nothing solid (houses, fences - not hedges) between us and (x, y)?
+    bool ClearLine(const Map& map, float x, float y) const;
+    // Watchdog sight: far, but only inside the view cone (or very close).
+    bool CanSeeInCone(const Map& map, const Player& player) const;
+    // Watchdog at its post: look around, follow the player and bark.
+    void Watch(float dt, const Map& map, const Player& player);
 
     // Wandering: pick a random open tile near home and path to it.
     void Roam(float dt, const Map& map, const Enemy* all, int count);
@@ -130,6 +149,12 @@ private:
     float    m_knockTime;          // seconds of flying left
     float    m_stun;               // seconds dazed after landing
     bool     m_justSpotted;
+    float    m_lookAngle;        // watchdog: where it's looking (radians)
+    float    m_lookGoal;         // ...and where it's turning to
+    float    m_glanceTimer;      // seconds until it picks a new direction
+    float    m_barkTimer;        // seconds until it can bark again
+    bool     m_seesPlayer;
+    bool     m_justBarked;
     float    m_roamPause;        // seconds left sniffing around before the next walk
     unsigned m_rng;              // own little random generator for wandering
 };

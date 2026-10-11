@@ -71,6 +71,10 @@ public:
 
     void Update(float dt);
 
+    // Perks can shorten the cooldown (1 = normal). Kept across Reset.
+    void  SetCooldownScale(float scale) { m_cooldownScale = scale; }
+    float CooldownTotal() const;       // this cat's cooldown, with the scale
+
     AbilityType Type() const { return m_type; }
     bool  IsReady() const {
         return m_type != AbilityType::None && m_cooldown <= 0.0f &&
@@ -105,4 +109,5 @@ private:
     float       m_dashTime = 0.0f;   // seconds left of a dash
     float       m_dashGrace = 0.0f;   // seconds of safety left after a dash
     bool        m_justLanded = false;
+    float       m_cooldownScale = 1.0f;
 };
