@@ -937,16 +937,17 @@ void WalkCycle::Update(float dt, float moved, float stepsPerTile, bool canWalk)
     if (m_phase > 6283.0f) m_phase -= 6283.1853f;   // keep it small (multiple of 2 pi)
 }
 
-float WalkCycle::Lift() const
+float WalkCycle::Lift(float size) const
 {
-    return fabsf(sinf(m_phase)) * WALK_BOUNCE * m_amount;
+    return fabsf(sinf(m_phase)) * WALK_BOUNCE * size * m_amount;
 }
 
-SpritePose WalkCycle::Pose() const
+SpritePose WalkCycle::Pose(float size) const
 {
     // s: 0 when a foot hits the ground, 1 at the top of the hop.
     float s = fabsf(sinf(m_phase));
-    float k = (2.0f * s - 1.0f) * WALK_SQUASH * m_amount;   // -squash .. +stretch
+    float squash = WALK_SQUASH * (size > 1.0f ? 1.0f + (size - 1.0f) * 0.5f : size);   // bigger hops squash a bit more
+    float k = (2.0f * s - 1.0f) * squash * m_amount;   // -squash .. +stretch
     SpritePose pose;
     pose.stretchY = 1.0f + k;
     pose.stretchX = 1.0f - k * 0.8f;

@@ -10,13 +10,13 @@ const AbilityInfo& GetAbilityInfo(AbilityType type)
 {
     static const AbilityInfo INFO[(int)AbilityType::Count] =
     {
-        // name             description                                                   cooldown               duration
-        { L"None",          L"",                                                          0.0f,                  0.0f },
-        { L"Ground Pound",  L"Jump up and slam down, knocking nearby dogs back.",         GROUND_POUND_COOLDOWN, 0.0f },
+        // name             description                                                   cooldown               duration          badge color
+        { L"None",          L"",                                                          0.0f,                  0.0f,             0xC9BCA8 },
+        { L"Ground Pound",  L"Jump up and slam down, knocking nearby dogs back.",         GROUND_POUND_COOLDOWN, 0.0f,             0xF08A4C },   // orange
         { L"Fur Barrage",   L"For 5 seconds, click or SPACE to shoot fur balls. "
-                            L"Hit dogs see stars for 2 seconds.",                         FUR_BARRAGE_COOLDOWN,  FUR_BARRAGE_TIME },
+                            L"Hit dogs see stars for 2 seconds.",                         FUR_BARRAGE_COOLDOWN,  FUR_BARRAGE_TIME, 0x9A82D6 },   // lavender
         { L"Dash",          L"Float up and zip forward the way you're looking. "
-                            L"Dogs can't bite you mid-dash.",                             DASH_COOLDOWN,         0.0f },
+                            L"Dogs can't bite you mid-dash.",                             DASH_COOLDOWN,         0.0f,             0x3DB8C6 },   // teal
     };
     int i = (int)type;
     if (i < 0 || i >= (int)AbilityType::Count) i = 0;

@@ -27,6 +27,7 @@ struct AbilityInfo
     const wchar_t* description;   // shown on the character select screen
     float          cooldown;      // seconds from using it until it's ready again
     float          duration;      // seconds it stays active (0 = instant)
+    unsigned long  badge;         // icon background color (0xRRGGBB)
 };
 
 const AbilityInfo& GetAbilityInfo(AbilityType type);

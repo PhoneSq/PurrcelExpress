@@ -155,6 +155,36 @@ static void ShiftFrameY(Frame& frame, int dy)
     }
 }
 
+// Like DrawIcon, plus a 1px outline traced around the picture's shape
+// (sticker style), so it stands out on any background.
+static void DrawIconOutlined(Frame& frame, const Texture& tex, int x, int y, int w, int h, DWORD outline)
+{
+    if (!tex.IsLoaded()) return;
+    int tw = tex.VisibleWidth(), th = tex.VisibleHeight();
+    if (tw * h > th * w) { int nh = w * th / tw; y += (h - nh) / 2; h = nh; }
+    else { int nw = h * tw / th; x += (w - nw) / 2; w = nw; }
+    if (w < 1 || h < 1) return;
+
+    auto solid = [&](int px, int py) -> bool {
+        if (px < 0 || py < 0 || px >= w || py >= h) return false;
+        int a; tex.Sample((px + 0.5f) / w, (py + 0.5f) / h, a);
+        return a >= 128;
+        };
+    for (int py = -1; py <= h; ++py)
+        for (int px = -1; px <= w; ++px)
+        {
+            int sx = x + px, sy = y + py;
+            if (sx < 0 || sy < 0 || sx >= frame.width || sy >= frame.height) continue;
+            if (solid(px, py))
+            {
+                int a;
+                frame.pixels[sy * frame.width + sx] = tex.Sample((px + 0.5f) / w, (py + 0.5f) / h, a);
+            }
+            else if (solid(px - 1, py) || solid(px + 1, py) || solid(px, py - 1) || solid(px, py + 1))
+                frame.pixels[sy * frame.width + sx] = outline;
+        }
+}
+
 // ----- Hand-drawn HUD pieces (same ink + cream as the character art) -----
 
 static const DWORD HUD_INK = 0x2A1E1A;
@@ -758,9 +788,9 @@ void CharacterSelectScreen::Render(Frame& frame)
         DrawIcon(frame, m_portraits[i], pic.left + 6, pic.top + 8, pic.right - pic.left - 12, pic.bottom - pic.top - 14);
 
         // Ability icon in a little circle.
-        RECT ic = { r.left + 10, r.top + 164, r.left + 36, r.top + 190 };
-        DrawCard(frame, ic, 13, Warm::WHITE, Warm::INK, 1.5f, 0);
-        DrawIcon(frame, m_abilityIcons[(int)info.ability], ic.left + 4, ic.top + 4, 18, 18);
+        RECT ic = { r.left + 9, r.top + 162, r.left + 39, r.top + 192 };
+        DrawCard(frame, ic, 15, GetAbilityInfo(info.ability).badge, Warm::INK, 2.0f, 0);
+        DrawIconOutlined(frame, m_abilityIcons[(int)info.ability], ic.left + 5, ic.top + 5, 20, 20, 0xFFFFFF);
     }
 
     DrawTitleSign(frame, dc, m_titleFont, L"Choose Your Cat");
@@ -780,7 +810,7 @@ void CharacterSelectScreen::Render(Frame& frame)
         PlainText(dc, info.name, name, DT_CENTER | DT_VCENTER | DT_SINGLELINE, Warm::TEXT);
 
         SelectObject(dc, m_textFont);
-        RECT abName = { r.left + 42, r.top + 166, r.right - 6, r.top + 188 };
+        RECT abName = { r.left + 45, r.top + 166, r.right - 6, r.top + 188 };
         wsprintfW(buf, L"%s (E)", ab.name);
         PlainText(dc, buf, abName, DT_LEFT | DT_VCENTER | DT_SINGLELINE, Warm::ORANGE);
 
@@ -1222,6 +1252,7 @@ RunScreen::RunScreen(GameData& data)
 
     // Dog art per type. Add the blue and yellow file names when they exist.
     m_dogs[(int)EnemyType::Blue].Load(L"Chasey.png");     // the chaser
+    m_dogs[(int)EnemyType::Yellow].Load(L"Spiky.png");    // the cutter-offer (bounces along)
     m_dogs[(int)EnemyType::Purple].Load(L"Blocky.png");   // the blocker
 
     for (int i = 1; i < (int)ItemType::Count; ++i)
@@ -1539,7 +1570,7 @@ GameState RunScreen::Update(float dt, const Input& input)
         {
             const Enemy& e = m_enemies[i];
             dx = e.X() - m_lastDogX[i]; dy = e.Y() - m_lastDogY[i];
-            m_dogWalk[i].Update(dt, sqrtf(dx * dx + dy * dy), DOG_STEPS_PER_TILE, !e.IsKnockedBack());
+            m_dogWalk[i].Update(dt, sqrtf(dx * dx + dy * dy), DOG_HOPS_PER_TILE[(int)e.Type()], !e.IsKnockedBack());
             m_lastDogX[i] = e.X(); m_lastDogY[i] = e.Y();
         }
     }
@@ -1784,7 +1815,8 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
             const Texture& pic = m_dogs[(int)e.Type()];
 
             const WalkCycle& walk = m_dogWalk[it.index];
-            float hop = walk.Lift();
+            float hopSize = DOG_HOP_SIZE[(int)e.Type()];
+            float hop = walk.Lift(hopSize);
             float headTop;   // top of the dog's head, in wall heights
             if (pic.IsLoaded())
             {
@@ -1792,7 +1824,7 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
                 // (the camera plane points to screen-right).
                 float across = e.MoveX() * cam.planeX + e.MoveY() * cam.planeY;
                 bool mirror = DOG_SPRITE_FACES_RIGHT ? (across < 0.0f) : (across > 0.0f);
-                SpritePose pose = walk.Pose();
+                SpritePose pose = walk.Pose(hopSize);
                 float size = DOG_SPRITE_SCALES[(int)e.Type()];
                 m_renderer.DrawSprite(frame.pixels, cam, e.X(), e.Y(), pic, size, mirror, 1.0f, light, hop, &pose);
                 headTop = size * pose.stretchY + hop;
@@ -1959,8 +1991,9 @@ void RunScreen::DrawHud(Frame& frame, const RECT& minimap)
     DrawPill(frame, item, HUD_CREAM, HUD_CREAM, item.left);
     // Ability: icon, with a dark shade that drains from the top as it recharges.
     const Ability& ab = m_player.GetAbility();
-    DrawPill(frame, ability, HUD_CREAM, HUD_CREAM, ability.left);
-    DrawIcon(frame, m_abilityIcons[(int)ab.Type()], ability.left + R - 14, ability.top + R - 7, 28, 14);
+    DWORD badge = GetAbilityInfo(ab.Type()).badge;
+    DrawPill(frame, ability, badge, badge, ability.left);
+    DrawIconOutlined(frame, m_abilityIcons[(int)ab.Type()], ability.left + R - 11, ability.top + R - 11, 22, 22, 0xFFFFFF);
     float cd = ab.CooldownFraction();
     if (ab.IsActive())
     {

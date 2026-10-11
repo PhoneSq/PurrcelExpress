@@ -80,8 +80,9 @@ public:
     // stunned... (the animation settles down smoothly).
     void Update(float dt, float moved, float stepsPerTile, bool canWalk);
 
-    float      Lift() const;       // hop height, in wall heights
-    SpritePose Pose() const;
+    // size: hop height / squash multiplier (1 = normal walk, 3 = big bouncy hops)
+    float      Lift(float size = 1.0f) const;   // hop height, in wall heights
+    SpritePose Pose(float size = 1.0f) const;
     bool       OddStep() const;    // flips every step (mirror the back view = waddle)
     int        StepCount() const;  // goes up by one each time a foot lands
     bool       IsWalking() const { return m_amount > 0.5f; }

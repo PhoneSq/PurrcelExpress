@@ -28,7 +28,7 @@ const float HEDGE_HEIGHT = 0.42f;  // hedges are low walls: this much of a wall'
 const float ROOF_SLOPE = 0.6f;   // roof rise per tile in from the edge (wall heights)
 const float ROOF_MAX_RISE = 0.9f;   // tallest a roof gets above the walls
 const float PACKAGE_SCALE = 0.18f;  // delivered package left on the doorstep
-// Dog height compared to a wall, per type: { Blue (Chasey), Yellow, Purple (Blocky) }
+// Dog height compared to a wall, per type: { Blue (Chasey), Yellow (Spiky), Purple (Blocky) }
 const float DOG_SPRITE_SCALES[3] = { 0.48f, 0.40f, 0.40f };
 const bool  DOG_SPRITE_FACES_RIGHT = true;  // which way the dog PNGs face (flipped for the other way)
 
@@ -38,6 +38,10 @@ const float WALK_SQUASH = 0.07f;  // how much it squashes / stretches (0.07 = 7%
 const float WALK_LEAN = 0.06f;  // side-to-side lean, as a share of its width
 const float CAT_STEPS_PER_TILE = 2.2f;   // short fat legs: lots of little steps
 const float DOG_STEPS_PER_TILE = 2.6f;
+// Per dog type { Blue (Chasey), Yellow (Spiky), Purple (Blocky) }: how big each hop is
+// (x WALK_BOUNCE / WALK_SQUASH) and how many hops per tile. Spiky bounces along.
+const float DOG_HOP_SIZE[3] = { 1.0f, 3.2f, 1.0f };
+const float DOG_HOPS_PER_TILE[3] = { DOG_STEPS_PER_TILE, 1.4f, DOG_STEPS_PER_TILE };
 
 // Enemies
 const int   MAX_ENEMIES = 12;
