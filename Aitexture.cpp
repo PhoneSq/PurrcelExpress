@@ -716,23 +716,48 @@ DWORD MinimapTileColor(TileType tile)
 struct Blob { float x, y, r; };
 
 // Fills round leafy clusters: lit from the top-left, dark outline, leaf speckle.
+// Is (x, y) inside any of the blobs? (pixel centers)
+static bool InFoliage(const Blob* blobs, int count, int x, int y)
+{
+    for (int b = 0; b < count; ++b)
+    {
+        float dx = (x + 0.5f - blobs[b].x) / blobs[b].r;
+        float dy = (y + 0.5f - blobs[b].y) / blobs[b].r;
+        if (dx * dx + dy * dy < 1.0f) return true;
+    }
+    return false;
+}
+
+// A leafy shape made of overlapping round blobs: shaded domes lit from the
+// top-left, a few lighter / darker speckles, and a dark outline.
+// Every pixel is worked out on its own in one pass (no shared scratch
+// buffer), so the result can't depend on how the compiler orders things.
 static void PaintFoliage(Texture& t, int w, int h, const Blob* blobs, int count,
     int baseR, int baseG, int baseB, unsigned seed)
 {
-    static unsigned char inside[128 * 128];
-    for (int i = 0; i < w * h; ++i) inside[i] = 0;
+    const DWORD outline = Rgb(baseR / 3, baseG / 3, baseB / 3);
 
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
         {
-            float best = -1.0f, lightAmt = 0.0f;
+            if (!InFoliage(blobs, count, x, y)) continue;
+
+            // Edge of the shape (a neighbor is outside, or the picture's border): outline.
+            bool edge = x == 0 || y == 0 || x == w - 1 || y == h - 1 ||
+                !InFoliage(blobs, count, x - 1, y) || !InFoliage(blobs, count, x + 1, y) ||
+                !InFoliage(blobs, count, x, y - 1) || !InFoliage(blobs, count, x, y + 1);
+            if (edge) { t.SetPixel(x, y, outline, 255); continue; }
+
+            // Inside: shade by the top-most blob here (a little dome).
+            float best = -1.0f, lightAmt = 0.75f;
             for (int b = 0; b < count; ++b)
             {
                 float dx = (x + 0.5f - blobs[b].x) / blobs[b].r;
                 float dy = (y + 0.5f - blobs[b].y) / blobs[b].r;
                 float d2 = dx * dx + dy * dy;
                 if (d2 >= 1.0f) continue;
-                float nz = sqrtf(1.0f - d2);                 // dome height
+                float rest = 1.0f - d2;
+                float nz = rest > 0.0f ? sqrtf(rest) : 0.0f;     // dome height
                 float top = nz + (blobs[b].y < h * 0.5f ? 0.15f : 0.0f);
                 if (top > best)
                 {
@@ -740,24 +765,13 @@ static void PaintFoliage(Texture& t, int w, int h, const Blob* blobs, int count,
                     lightAmt = 0.5f + 0.5f * (0.55f * nz - 0.30f * dx - 0.40f * dy);
                 }
             }
-            if (best < 0.0f) continue;
-            inside[y * w + x] = 1;
+            if (!(lightAmt > 0.2f)) lightAmt = 0.2f;    // (also catches NaN)
+            if (lightAmt > 1.3f)    lightAmt = 1.3f;
 
             unsigned n = Hash(x + (int)seed * 131, y);
             float speckle = ((n % 100) < 12) ? 1.25f : (((n >> 8) % 100) < 10 ? 0.75f : 1.0f);
             float k = lightAmt * speckle;
-            t.SetPixel(x, y, Rgb((int)(baseR * k), (int)(baseG * k), (int)(baseB * k)));
-        }
-
-    // Dark outline on the edge pixels.
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x)
-        {
-            if (!inside[y * w + x]) continue;
-            bool edge = x == 0 || y == 0 || x == w - 1 || y == h - 1 ||
-                !inside[y * w + x - 1] || !inside[y * w + x + 1] ||
-                !inside[(y - 1) * w + x] || !inside[(y + 1) * w + x];
-            if (edge) t.SetPixel(x, y, Rgb(baseR / 3, baseG / 3, baseB / 3));
+            t.SetPixel(x, y, Rgb((int)(baseR * k), (int)(baseG * k), (int)(baseB * k)), 255);
         }
 }
 
