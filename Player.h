@@ -1,9 +1,11 @@
 #pragma once
 
 // =====================================================
-// The cat you control. Characters and abilities will
-// live here too when we add them.
+// The cat you control. Which cat it is (and its ability)
+// comes from Character.h.
 // =====================================================
+
+#include "Character.h"
 
 class Input;
 class Map;
@@ -45,6 +47,13 @@ public:
 
     // Puts the player at (x, y), facing +X, with full stamina.
     void Reset(float x, float y);
+
+    // Which cat this is (sets the ability). Call before Reset.
+    void SetCharacter(CharacterType type);
+
+    // ----- Ability (E) -----
+    bool           UseAbility() { return m_ability.TryStart(); }
+    const Ability& GetAbility() const { return m_ability; }
     void Update(float dt, const Input& input, const Map& map);
 
     float X() const { return m_x; }
@@ -61,8 +70,8 @@ public:
     int  Hp() const { return m_hp; }
     bool IsInvulnerable() const { return m_invuln > 0.0f; }
 
-    // Takes 1 HP unless still invulnerable from the last hit.
-    // Returns true if the hit landed.
+    // Takes 1 HP unless still invulnerable from the last hit
+    // (or in the air from a ground pound). Returns true if the hit landed.
     bool TakeHit();
 
     // +1 HP up to the max. False if already full (nothing happens).
@@ -90,4 +99,6 @@ private:
 
     int     m_hp;
     float   m_invuln;   // seconds of invincibility left
+
+    Ability m_ability;
 };

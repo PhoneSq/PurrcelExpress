@@ -48,8 +48,16 @@ public:
     // True for the one frame this dog spotted the player.
     bool JustSpotted() const { return m_justSpotted; }
 
+    // Sent flying away from (fromX, fromY), then dazed for a moment.
+    void Knockback(float fromX, float fromY);
+    bool IsKnockedBack() const { return m_knockTime > 0.0f || m_stun > 0.0f; }
+
+    // Seeing stars: stands still, can't bite.
+    void Stun(float seconds) { if (seconds > m_stun) m_stun = seconds; }
+    bool IsStunned() const { return m_stun > 0.0f && m_knockTime <= 0.0f; }
+
     // Biting: a dog that just bit sits still for DOG_BITE_COOLDOWN.
-    bool CanBite() const { return m_biteCooldown <= 0.0f && m_mode != Mode::Lured; }
+    bool CanBite() const { return m_biteCooldown <= 0.0f && m_mode != Mode::Lured && !IsKnockedBack(); }
     void OnBite() { m_biteCooldown = DOG_BITE_COOLDOWN; }
 
     // Direction of the last step (for flipping the sprite). Zero if it hasn't moved.
@@ -117,6 +125,10 @@ private:
     Mode     m_mode;
     int      m_lureX, m_lureY;   // bone tile
     float    m_lureTimer;        // seconds left on the bone
+
+    float    m_knockVX, m_knockVY; // flying velocity (tiles per second)
+    float    m_knockTime;          // seconds of flying left
+    float    m_stun;               // seconds dazed after landing
     bool     m_justSpotted;
     float    m_roamPause;        // seconds left sniffing around before the next walk
     unsigned m_rng;              // own little random generator for wandering

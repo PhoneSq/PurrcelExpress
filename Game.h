@@ -3,6 +3,7 @@
 #include <windows.h>
 #include "World.h"
 #include "Item.h"
+#include "Character.h"
 
 // =====================================================
 // The core of the game: states, input, the Screen
@@ -14,6 +15,7 @@
 enum class GameState
 {
     MainMenu,
+    CharacterSelect,
     DeliverySelect,
     Shop,
     Run,
@@ -33,6 +35,9 @@ struct GameData
     // The one item you carry (bought in the shop, used during a delivery).
     // It stays until you use it, even if a delivery fails.
     ItemType heldItem = ItemType::None;
+
+    // The cat picked on the character select screen.
+    CharacterType character = CharacterType::CatA;
 
     // True when the select screen should roll a new list. Set after a
     // delivery; visiting the shop or the menu keeps the same list.
@@ -161,6 +166,7 @@ private:
 
     // Screens (created in Init)
     Screen* m_mainMenu;
+    Screen* m_characterSelect;
     Screen* m_deliverySelect;
     Screen* m_shop;
     Screen* m_run;

@@ -74,6 +74,26 @@ const float BONE_SCALE = 0.10f; // bone height compared to a wall
 const float HEART_SCALE = 0.12f; // hearts over a dog that's after the bone
 const int   ITEM_USE_KEY = 'Q';
 
+// Abilities (E)
+const int   ABILITY_KEY = 'E';
+const float GROUND_POUND_COOLDOWN = 6.0f;   // seconds
+const float GROUND_POUND_AIR_TIME = 0.55f;  // seconds from jump to slam
+const float GROUND_POUND_HEIGHT = 0.35f;  // how high, in wall heights
+const float GROUND_POUND_RADIUS = 2.5f;   // tiles: dogs closer than this get knocked back
+const float KNOCKBACK_DISTANCE = 2.0f;   // tiles they fly
+const float KNOCKBACK_SPEED = 9.0f;   // tiles per second while flying
+const float KNOCKBACK_STUN = 0.6f;   // seconds dazed after landing
+const float SLAM_SHAKE_TIME = 0.25f;  // screen shake on landing
+
+const float FUR_BARRAGE_TIME = 5.0f;   // seconds you can shoot fur balls
+const float FUR_BARRAGE_COOLDOWN = 12.0f;  // seconds from activating until it's ready again
+const float FUR_FIRE_INTERVAL = 0.25f;  // seconds between shots (click / SPACE)
+const float FUR_SPEED = 12.0f;  // tiles per second
+const float FUR_RANGE = 10.0f;  // tiles before it drops
+const float FUR_HIT_RADIUS = 0.45f;  // tiles
+const float FUR_STUN_TIME = 2.0f;   // seconds a hit dog sees stars
+const float FUR_SCALE = 0.12f;  // fur ball size compared to a wall
+
 // Time of day (rolled per delivery)
 const int   NIGHT_CHANCE = 50;     // percent of deliveries at night
 

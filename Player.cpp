@@ -81,11 +81,17 @@ void Player::Reset(float x, float y)
     m_forwardInput = m_strafeInput = 0.0f;
     m_hp = PLAYER_MAX_HP;
     m_invuln = 0.0f;
+    m_ability.Reset(m_ability.Type());   // same ability, fresh cooldown
+}
+
+void Player::SetCharacter(CharacterType type)
+{
+    m_ability.Reset(GetCharacterInfo(type).ability);
 }
 
 bool Player::TakeHit()
 {
-    if (m_invuln > 0.0f || m_hp <= 0) return false;
+    if (m_invuln > 0.0f || m_hp <= 0 || m_ability.IsAirborne()) return false;
     --m_hp;
     m_invuln = HIT_INVULN_TIME;
     return true;
@@ -119,6 +125,7 @@ void Player::Move(float dx, float dy, const Map& map)
 void Player::Update(float dt, const Input& input, const Map& map)
 {
     if (m_invuln > 0.0f) m_invuln -= dt;
+    m_ability.Update(dt);
 
     // look
     float turn = input.MouseDX() * MOUSE_SENS;

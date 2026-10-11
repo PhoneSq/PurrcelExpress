@@ -9,10 +9,10 @@
 
 // =====================================================
 // Every screen of the game. New screens go here too.
-// Flow: MainMenu -> DeliverySelect -> Run -> (delivered) DeliverySelect
-//                       |    ^            -> (caught)    GameOver
-//                       v    |
-//                        Shop
+// Flow: MainMenu -> CharacterSelect -> DeliverySelect -> Run -> (delivered) DeliverySelect
+//                                         |    ^            -> (caught)    GameOver
+//                                         v    |
+//                                          Shop
 // =====================================================
 
 
@@ -40,6 +40,35 @@ private:
 
     HFONT m_titleFont;
     HFONT m_buttonFont;
+};
+
+
+// Pick your cat (each has its own ability).
+class CharacterSelectScreen : public Screen
+{
+public:
+    explicit CharacterSelectScreen(GameData& data);
+    ~CharacterSelectScreen();
+
+    void      Enter() override;
+    GameState Update(float dt, const Input& input) override;
+    void      Render(Frame& frame) override;
+
+private:
+    static const int COUNT = (int)CharacterType::Count;
+
+    RECT CardRect(int index) const;
+    int  HitTest(int x, int y) const;
+
+    GameData& m_data;
+    int       m_selected;
+    int       m_lastMouseX, m_lastMouseY;
+    Texture   m_portraits[COUNT];                     // side view of each cat
+    Texture   m_abilityIcons[(int)AbilityType::Count];
+
+    HFONT m_titleFont;
+    HFONT m_nameFont;
+    HFONT m_textFont;
 };
 
 
@@ -145,8 +174,25 @@ private:
     Enemy m_enemies[MAX_ENEMIES];
     int   m_enemyCount;
 
+    void LoadCatPictures();     // for m_data.character (only when it changed)
+    void OnAbilityLanded();     // the slam of a ground pound
+    void ShootFurBall();
+    void UpdateFurBalls(float dt);
+
     // Third person: the cat seen from behind (V toggles).
     bool    m_thirdPerson;
+    int     m_loadedCharacter;  // which cat's pictures are loaded (-1 none)
+    Texture m_shadow;           // under the cat while it's in the air
+    Texture m_abilityIcons[(int)AbilityType::Count];
+    float   m_shake;            // screen shake seconds left
+
+    // Fur barrage: fur balls in flight
+    struct FurBall { float x, y, dx, dy, travelled; bool alive; };
+    static const int MAX_FUR_BALLS = 24;
+    FurBall m_furBalls[MAX_FUR_BALLS];
+    float   m_fireTimer;        // seconds until the next shot is allowed
+    Texture m_furBall;
+    Texture m_dizzy[3];         // spinning stars over stunned dogs (3 frames)
     Texture m_catBack;       // walking straight / standing
     Texture m_catBackSide;   // walking diagonally (faces right; flipped for left)
     Texture m_catSide;       // strafing (faces right; flipped for left)

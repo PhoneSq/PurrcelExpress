@@ -108,3 +108,16 @@ void MakeBone(Texture& t);
 
 // Little heart floating over a dog that's after a bone.
 void MakeHeart(Texture& t);
+
+// Dumbbell: the ground pound ability icon.
+void MakeDumbbell(Texture& t);
+
+// Soft dark oval: the shadow under the cat while it's in the air.
+void MakeShadow(Texture& t);
+
+// Grey fluffy ball (only used if Fur.png is missing).
+void MakeFurBall(Texture& t);
+
+// Dizzy ring with stars over a stunned dog. phase 0..2 turns the stars
+// around the ring (swap frames to make them spin).
+void MakeDizzy(Texture& t, int phase);

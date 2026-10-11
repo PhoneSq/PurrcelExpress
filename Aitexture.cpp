@@ -613,3 +613,80 @@ void MakeHeart(Texture& t)
     };
     PaintArt(t, ART, 9, 8, 'R', 0xF0507A, 'W', 0xFFB8CC, 0, 0);
 }
+
+void MakeDumbbell(Texture& t)
+{
+    static const char* const ART[7] =
+    {
+        " KKK      KKK ",
+        "KGWGK    KGWGK",
+        "KGWGKKKKKKGWGK",
+        "KGGGHHHHHHGGGK",
+        "KGGGKKKKKKGGGK",
+        "KGGGK    KGGGK",
+        " KKK      KKK ",
+    };
+    PaintArt(t, ART, 14, 7, 'G', 0x5A6270, 'W', 0x9AA3B0, 'H', 0xC8CCD2);
+}
+
+void MakeShadow(Texture& t)
+{
+    const int W = 24, H = 8;
+    t.Create(W, H);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+        {
+            float dx = (x + 0.5f - W * 0.5f) / (W * 0.5f), dy = (y + 0.5f - H * 0.5f) / (H * 0.5f);
+            float d = dx * dx + dy * dy;
+            if (d < 1.0f) t.SetPixel(x, y, 0x101010, (int)(140 * (1.0f - d)));
+        }
+    t.FinishEdits();
+}
+
+void MakeFurBall(Texture& t)
+{
+    const int S = 12;
+    t.Create(S, S);
+    for (int y = 0; y < S; ++y)
+        for (int x = 0; x < S; ++x)
+        {
+            float dx = x + 0.5f - S * 0.5f, dy = y + 0.5f - S * 0.5f;
+            float d = sqrtf(dx * dx + dy * dy) + (Hash(x, y) % 3) * 0.3f;   // fluffy edge
+            if (d > S * 0.5f) continue;
+            DWORD c = (d > S * 0.5f - 1.2f) ? INK : ((dx < -1 && dy < -1) ? 0xA8A8A8 : 0x7A7A7A);
+            t.SetPixel(x, y, c);
+        }
+    t.FinishEdits();
+}
+
+void MakeDizzy(Texture& t, int phase)
+{
+    const int W = 30, H = 12;
+    t.Create(W, H);
+
+    // The ring: a thin oval.
+    const float rx = 12.5f, ry = 3.6f, cx = W * 0.5f, cy = H * 0.5f + 0.5f;
+    for (int i = 0; i < 160; ++i)
+    {
+        float a = i / 160.0f * 6.2832f;
+        t.SetPixel((int)(cx + cosf(a) * rx), (int)(cy + sinf(a) * ry), 0xFFE9A0, 220);
+    }
+
+    // Three little stars on it, a third of a turn apart.
+    for (int s = 0; s < 3; ++s)
+    {
+        float a = (s / 3.0f + phase / 9.0f) * 6.2832f;
+        int sx = (int)(cx + cosf(a) * rx), sy = (int)(cy + sinf(a) * ry);
+        static const int PX[13] = { 0, -1, 1, 0, 0, -2, 2, 0, 0, -1, 1, -1, 1 };
+        static const int PY[13] = { 0, 0, 0, -1, 1, 0, 0, -2, 2, -1, -1, 1, 1 };
+        for (int k = 0; k < 13; ++k)
+        {
+            bool tip = (k >= 5 && k <= 8);
+            bool corner = (k >= 9);
+            DWORD c = corner ? INK : (tip ? 0xF0B020 : 0xFFE040);
+            int px = sx + PX[k], py = sy + PY[k];
+            if (px >= 0 && py >= 0 && px < W && py < H) t.SetPixel(px, py, c);
+        }
+    }
+    t.FinishEdits();
+}

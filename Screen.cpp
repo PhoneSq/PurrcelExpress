@@ -90,6 +90,30 @@ static void DrawIcon(Frame& frame, const Texture& tex, int x, int y, int w, int 
     }
 }
 
+// Moves the whole picture down (dy > 0) or up (dy < 0); the gap is filled
+// with the edge row (sky at the top, ground at the bottom).
+static void ShiftFrameY(Frame& frame, int dy)
+{
+    if (dy == 0) return;
+    int W = frame.width, H = frame.height;
+    if (dy >= H || -dy >= H) return;
+    if (dy > 0)
+    {
+        for (int y = H - 1; y >= dy; --y)
+            CopyMemory(&frame.pixels[y * W], &frame.pixels[(y - dy) * W], W * sizeof(DWORD));
+        for (int y = 0; y < dy; ++y)
+            CopyMemory(&frame.pixels[y * W], &frame.pixels[dy * W], W * sizeof(DWORD));
+    }
+    else
+    {
+        int up = -dy;
+        for (int y = 0; y < H - up; ++y)
+            CopyMemory(&frame.pixels[y * W], &frame.pixels[(y + up) * W], W * sizeof(DWORD));
+        for (int y = H - up; y < H; ++y)
+            CopyMemory(&frame.pixels[y * W], &frame.pixels[(H - up - 1) * W], W * sizeof(DWORD));
+    }
+}
+
 // ----- Hand-drawn HUD pieces (same ink + cream as the character art) -----
 
 static const DWORD HUD_INK = 0x2A1E1A;
@@ -179,7 +203,7 @@ MainMenuScreen::MainMenuScreen()
         m_buttons[i].bottom = m_buttons[i].top + h;
     }
 
-    m_labels[0] = L"PLAY";  m_targets[0] = GameState::DeliverySelect;
+    m_labels[0] = L"PLAY";  m_targets[0] = GameState::CharacterSelect;
     m_labels[1] = L"EXIT";  m_targets[1] = GameState::Quit;
 
     m_titleFont = MakeFont(56);
@@ -263,6 +287,144 @@ void MainMenuScreen::Render(Frame& frame)
         PlainText(dc, m_labels[i], r, DT_CENTER | DT_VCENTER | DT_SINGLELINE,
             i == m_selected ? RGB(10, 10, 12) : TEXT_GREEN);
     }
+
+    SelectObject(dc, oldFont);
+}
+
+
+// =====================================================
+// CHARACTER SELECT
+// =====================================================
+
+CharacterSelectScreen::CharacterSelectScreen(GameData& data)
+    : m_data(data), m_selected(0), m_lastMouseX(-1), m_lastMouseY(-1)
+{
+    m_titleFont = MakeFont(26);
+    m_nameFont = MakeFont(17);
+    m_textFont = MakeFont(13);
+
+    for (int i = 0; i < COUNT; ++i)
+        m_portraits[i].Load(GetCharacterInfo((CharacterType)i).spriteSide);
+    for (int i = 1; i < (int)AbilityType::Count; ++i)
+        MakeAbilityIcon((AbilityType)i, m_abilityIcons[i]);
+}
+
+CharacterSelectScreen::~CharacterSelectScreen()
+{
+    DeleteObject(m_titleFont);
+    DeleteObject(m_nameFont);
+    DeleteObject(m_textFont);
+}
+
+void CharacterSelectScreen::Enter()
+{
+    m_selected = (int)m_data.character;
+    m_lastMouseX = m_lastMouseY = -1;
+}
+
+RECT CharacterSelectScreen::CardRect(int index) const
+{
+    const int gap = 24, top = 62, h = 290;
+    int w = (SCREEN_W - 60 - (COUNT - 1) * gap) / COUNT;
+    int left = (SCREEN_W - (COUNT * w + (COUNT - 1) * gap)) / 2 + index * (w + gap);
+    RECT r = { left, top, left + w, top + h };
+    return r;
+}
+
+int CharacterSelectScreen::HitTest(int x, int y) const
+{
+    for (int i = 0; i < COUNT; ++i)
+    {
+        RECT r = CardRect(i);
+        if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return i;
+    }
+    return -1;
+}
+
+GameState CharacterSelectScreen::Update(float, const Input& input)
+{
+    int mx = input.MouseX(), my = input.MouseY();
+    int hover = HitTest(mx, my);
+    if ((mx != m_lastMouseX || my != m_lastMouseY) && m_lastMouseX != -1 && hover >= 0)
+        m_selected = hover;
+    m_lastMouseX = mx;
+    m_lastMouseY = my;
+
+    if (input.WasPressed(VK_LEFT) || input.WasPressed('A'))
+        m_selected = (m_selected + COUNT - 1) % COUNT;
+    if (input.WasPressed(VK_RIGHT) || input.WasPressed('D'))
+        m_selected = (m_selected + 1) % COUNT;
+
+    bool click = input.WasPressed(VK_LBUTTON) && hover >= 0;
+    if (click) m_selected = hover;
+    if (click || input.WasPressed(VK_RETURN) || input.WasPressed(VK_SPACE))
+    {
+        m_data.character = (CharacterType)m_selected;
+        return GameState::DeliverySelect;
+    }
+
+    if (input.WasPressed(VK_ESCAPE)) return GameState::MainMenu;
+    return GameState::CharacterSelect;
+}
+
+void CharacterSelectScreen::Render(Frame& frame)
+{
+    for (int i = 0; i < frame.width * frame.height; ++i) frame.pixels[i] = UI_BG;
+
+    for (int i = 0; i < COUNT; ++i)
+    {
+        RECT r = CardRect(i);
+        bool sel = (i == m_selected);
+        const CharacterInfo& info = GetCharacterInfo((CharacterType)i);
+
+        FillBox(frame, r, sel ? 0x0A3C0A : UI_DARK);
+        OutlineBox(frame, r, sel ? 0x32DC32 : 0x2A4A2A);
+
+        // The cat, side view, on a cream backdrop.
+        RECT pic = { r.left + 10, r.top + 10, r.right - 10, r.top + 130 };
+        FillBox(frame, pic, sel ? 0xFFF6E6 : 0xC9BCA8);
+        DrawIcon(frame, m_portraits[i], pic.left + 6, pic.top + 6,
+            pic.right - pic.left - 12, pic.bottom - pic.top - 12);
+
+        // Ability icon next to the ability name.
+        DrawIcon(frame, m_abilityIcons[(int)info.ability], r.left + 12, r.top + 166, 28, 14);
+    }
+
+    HDC dc = frame.dc;
+    SetBkMode(dc, TRANSPARENT);
+    HGDIOBJ oldFont = SelectObject(dc, m_titleFont);
+    wchar_t buf[96];
+
+    RECT title = { 0, 16, frame.width, 50 };
+    PlainText(dc, L"CHOOSE YOUR CAT", title, DT_CENTER | DT_SINGLELINE, TEXT_GREEN);
+
+    for (int i = 0; i < COUNT; ++i)
+    {
+        RECT r = CardRect(i);
+        bool sel = (i == m_selected);
+        const CharacterInfo& info = GetCharacterInfo((CharacterType)i);
+        const AbilityInfo& ab = GetAbilityInfo(info.ability);
+
+        SelectObject(dc, m_nameFont);
+        RECT name = { r.left, r.top + 138, r.right, r.top + 158 };
+        PlainText(dc, info.name, name, DT_CENTER | DT_SINGLELINE, sel ? RGB(255, 255, 255) : RGB(180, 180, 180));
+
+        SelectObject(dc, m_textFont);
+        RECT abName = { r.left + 46, r.top + 165, r.right - 6, r.top + 181 };
+        wsprintfW(buf, L"%s (E)", ab.name);
+        PlainText(dc, buf, abName, DT_LEFT | DT_SINGLELINE, RGB(255, 220, 0));
+
+        RECT desc = { r.left + 10, r.top + 190, r.right - 10, r.bottom - 26 };
+        PlainText(dc, ab.description, desc, DT_LEFT | DT_WORDBREAK, RGB(170, 200, 170));
+
+        RECT cd = { r.left + 10, r.bottom - 22, r.right - 10, r.bottom - 6 };
+        wsprintfW(buf, L"Cooldown: %ds", (int)(ab.cooldown + 0.5f));
+        PlainText(dc, buf, cd, DT_LEFT | DT_SINGLELINE, RGB(120, 140, 120));
+    }
+
+    RECT hint = { 0, 372, frame.width, 390 };
+    PlainText(dc, L"LEFT/RIGHT: select     ENTER / CLICK: choose     ESC: back", hint,
+        DT_CENTER | DT_SINGLELINE, RGB(110, 110, 110));
 
     SelectObject(dc, oldFont);
 }
@@ -664,17 +826,20 @@ void ShopScreen::Render(Frame& frame)
 static const float MESSAGE_TIME = 3.0f;   // seconds a message stays up
 
 RunScreen::RunScreen(GameData& data)
-    : m_data(data), m_enemyCount(0), m_thirdPerson(true), m_alertTimer(0.0f),
+    : m_data(data), m_enemyCount(0), m_thirdPerson(true), m_loadedCharacter(-1), m_shake(0.0f), m_fireTimer(0.0f), m_alertTimer(0.0f),
     m_boneActive(false), m_boneX(0), m_boneY(0), m_boneTimer(0), m_time(0.0f), m_hitFlash(0.0f),
     m_messageColor(RGB(255, 255, 255)), m_messageTimer(0.0f)
 {
     m_message[0] = 0;
 
-    // The cat pictures (assets folder). Any missing one is just skipped.
-    m_catBack.Load(L"PlayerBack.png");
-    m_catBackSide.Load(L"PlayerBackSide.png");
-    m_catSide.Load(L"PlayerSide.png");
+    // The cat pictures are loaded in Enter (they depend on which cat you picked).
     m_package.Load(L"Pack.png");
+    MakeShadow(m_shadow);
+    if (!m_furBall.Load(L"Fur.png")) MakeFurBall(m_furBall);
+    for (int i = 0; i < 3; ++i) MakeDizzy(m_dizzy[i], i);
+    for (int i = 0; i < MAX_FUR_BALLS; ++i) m_furBalls[i].alive = false;
+    for (int i = 1; i < (int)AbilityType::Count; ++i)
+        MakeAbilityIcon((AbilityType)i, m_abilityIcons[i]);
 
     // Dog art per type. Add the blue and yellow file names when they exist.
     m_dogs[(int)EnemyType::Blue].Load(L"Chasey.png");     // the chaser
@@ -701,7 +866,9 @@ void RunScreen::Enter()
     const Contract& c = m_data.chosen;
 
     m_map.Generate(MapSizeFor(c.enemies), m_data.rng);
+    m_player.SetCharacter(m_data.character);
     m_player.Reset(m_map.StartX(), m_map.StartY());
+    LoadCatPictures();
     m_run.Start(c, m_map, m_data.rng);
     m_renderer.SetNight(c.night);
     SpawnEnemies();
@@ -709,8 +876,94 @@ void RunScreen::Enter()
     m_messageTimer = 0.0f;
     m_hitFlash = 0.0f;
     m_alertTimer = 0.0f;
+    m_shake = 0.0f;
+    m_fireTimer = 0.0f;
+    for (int i = 0; i < MAX_FUR_BALLS; ++i) m_furBalls[i].alive = false;
     m_boneActive = false;
     m_data.newContracts = true;   // whatever happens, the next list is a fresh one
+}
+
+void RunScreen::LoadCatPictures()
+{
+    if (m_loadedCharacter == (int)m_data.character) return;
+    m_loadedCharacter = (int)m_data.character;
+
+    // Any missing one is just skipped (the cat falls back to its back view).
+    const CharacterInfo& info = GetCharacterInfo(m_data.character);
+    m_catBack.Load(info.spriteBack);
+    m_catBackSide.Load(info.spriteBackSide);
+    m_catSide.Load(info.spriteSide);
+}
+
+void RunScreen::OnAbilityLanded()
+{
+    switch (m_player.GetAbility().Type())
+    {
+    case AbilityType::GroundPound:
+    {
+        // SLAM: every dog close by goes flying.
+        for (int i = 0; i < m_enemyCount; ++i)
+        {
+            float dx = m_enemies[i].X() - m_player.X(), dy = m_enemies[i].Y() - m_player.Y();
+            if (dx * dx + dy * dy <= GROUND_POUND_RADIUS * GROUND_POUND_RADIUS)
+                m_enemies[i].Knockback(m_player.X(), m_player.Y());
+        }
+        m_shake = SLAM_SHAKE_TIME;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void RunScreen::ShootFurBall()
+{
+    for (int i = 0; i < MAX_FUR_BALLS; ++i)
+    {
+        FurBall& b = m_furBalls[i];
+        if (b.alive) continue;
+        // Straight ahead (the crosshair is dead center in both views).
+        b.dx = m_player.DirX();
+        b.dy = m_player.DirY();
+        b.x = m_player.X() + b.dx * 0.3f;
+        b.y = m_player.Y() + b.dy * 0.3f;
+        b.travelled = 0.0f;
+        b.alive = true;
+        m_fireTimer = FUR_FIRE_INTERVAL;
+        return;
+    }
+}
+
+void RunScreen::UpdateFurBalls(float dt)
+{
+    // Small steps, so a fast ball can't skip through a dog or a wall.
+    const float STEP = 0.15f;
+    for (int i = 0; i < MAX_FUR_BALLS; ++i)
+    {
+        FurBall& b = m_furBalls[i];
+        float remaining = FUR_SPEED * dt;
+        while (b.alive && remaining > 0.0f)
+        {
+            float s = remaining < STEP ? remaining : STEP;
+            remaining -= s;
+            b.x += b.dx * s;
+            b.y += b.dy * s;
+            b.travelled += s;
+
+            if (m_map.IsWall((int)b.x, (int)b.y) || b.travelled > FUR_RANGE) { b.alive = false; break; }
+
+            for (int e = 0; e < m_enemyCount; ++e)
+            {
+                float dx = m_enemies[e].X() - b.x, dy = m_enemies[e].Y() - b.y;
+                if (dx * dx + dy * dy < FUR_HIT_RADIUS * FUR_HIT_RADIUS)
+                {
+                    m_enemies[e].Stun(FUR_STUN_TIME);
+                    b.alive = false;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 void RunScreen::SpawnEnemies()
@@ -829,8 +1082,21 @@ GameState RunScreen::Update(float dt, const Input& input)
 
     if (input.WasPressed(ITEM_USE_KEY))
         UseHeldItem();
+    if (input.WasPressed(ABILITY_KEY) && m_player.UseAbility() &&
+        m_player.GetAbility().Type() == AbilityType::FurBarrage)
+        ShowMessage(L"FUR BARRAGE!  CLICK / SPACE TO SHOOT", RGB(220, 220, 220));
+
+    // Fur barrage: one fur ball per click (or SPACE) while it lasts.
+    if (m_fireTimer > 0.0f) m_fireTimer -= dt;
+    if (m_player.GetAbility().Type() == AbilityType::FurBarrage && m_player.GetAbility().IsActive() &&
+        m_fireTimer <= 0.0f && (input.WasPressed(VK_LBUTTON) || input.WasPressed(VK_SPACE)))
+        ShootFurBall();
+    UpdateFurBalls(dt);
 
     m_player.Update(dt, input, m_map);
+    if (m_player.GetAbility().JustLanded())
+        OnAbilityLanded();
+    if (m_shake > 0.0f) m_shake -= dt;
 
     if (m_alertTimer > 0.0f) m_alertTimer -= dt;
     if (m_boneActive && (m_boneTimer -= dt) <= 0.0f) m_boneActive = false;
@@ -893,6 +1159,14 @@ void RunScreen::Render(Frame& frame)
     }
 
     DrawActors(frame, cam, cameraDistance);
+
+    // First person ground pound: the world drops away as you jump.
+    // Landing: a short, sharp shake.
+    int shift = 0;
+    if (!m_thirdPerson) shift += (int)(m_player.GetAbility().JumpHeight() * frame.height * 0.6f);
+    if (m_shake > 0.0f) shift += (int)(sinf(m_time * 90.0f) * 6.0f * (m_shake / SLAM_SHAKE_TIME));
+    ShiftFrameY(frame, shift);
+
     m_renderer.DrawCrosshair(frame.pixels);
     if (m_alertTimer > 0.0f && !m_run.Finished()) DrawSpottedAlert(frame, cameraDistance);
 
@@ -931,7 +1205,7 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
         int   tile;    // prop tile type
         float x, y;
     };
-    enum { KIND_PROP, KIND_DOG, KIND_CAT, KIND_PACKAGE, KIND_BONE };
+    enum { KIND_PROP, KIND_DOG, KIND_CAT, KIND_PACKAGE, KIND_BONE, KIND_FUR };
 
     static const int MAX_ITEMS = 640;
     static Item items[MAX_ITEMS];
@@ -964,6 +1238,16 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
             float dx = it.x - cam.x, dy = it.y - cam.y;
             it.dist = dx * dx + dy * dy;
         }
+
+    for (int i = 0; i < MAX_FUR_BALLS && count < MAX_ITEMS; ++i)
+    {
+        if (!m_furBalls[i].alive) continue;
+        Item& it = items[count++];
+        it.x = m_furBalls[i].x; it.y = m_furBalls[i].y;
+        it.kind = KIND_FUR; it.index = i; it.tile = 0;
+        float dx = it.x - cam.x, dy = it.y - cam.y;
+        it.dist = dx * dx + dy * dy;
+    }
 
     if (m_boneActive && count < MAX_ITEMS)
     {
@@ -1034,6 +1318,10 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
             if (it.tile == TILE_LAMP && m_renderer.IsNight())
                 m_renderer.DrawGlow(frame.pixels, cam, it.x, it.y, 1.07f, 0.32f, 0xFFD890);
         }
+        else if (it.kind == KIND_FUR)
+        {
+            m_renderer.DrawSprite(frame.pixels, cam, it.x, it.y, m_furBall, FUR_SCALE, false, 1.0f, light, 0.18f);
+        }
         else if (it.kind == KIND_BONE)
         {
             // Blinks for its last second, then it's gone.
@@ -1070,6 +1358,14 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
                 headTop = 0.75f;
             }
 
+            // Seeing stars: a spinning ring of them around its head.
+            if (e.IsStunned())
+            {
+                int phase = (int)(m_time * 9.0f) % 3;
+                m_renderer.DrawSprite(frame.pixels, cam, e.X(), e.Y(), m_dizzy[phase],
+                    0.16f, false, 1.0f, light, headTop - 0.09f);
+            }
+
             // In love with the bone: a heart bobbing over its head.
             if (e.IsLured())
             {
@@ -1094,8 +1390,14 @@ void RunScreen::DrawActors(Frame& frame, const Camera& cam, float cameraDistance
             else if (strafing && m_catSide.IsLoaded())          pic = &m_catSide;
             if (pic == &m_catBack) mirror = false;
 
+            // Ground pound: up in the air, with a shadow left on the ground.
+            float jump = m_player.GetAbility().JumpHeight();
+            if (jump > 0.0f)
+                m_renderer.DrawSprite(frame.pixels, cam, m_player.X(), m_player.Y(), m_shadow,
+                    0.05f, false, catFade * (1.0f - jump / GROUND_POUND_HEIGHT * 0.5f), light);
+
             m_renderer.DrawSprite(frame.pixels, cam, m_player.X(), m_player.Y(),
-                *pic, CAT_SPRITE_SCALE, mirror, catFade, light);
+                *pic, CAT_SPRITE_SCALE, mirror, catFade, light, jump);
         }
     }
 }
@@ -1160,7 +1462,34 @@ void RunScreen::DrawHud(Frame& frame, const RECT& minimap)
     RECT item = ability;
     OffsetRect(&item, -(2 * R + 10), 0);
     DrawPill(frame, item, HUD_CREAM, HUD_CREAM, item.left);
-    DrawPill(frame, ability, 0xC9BCA8, 0xC9BCA8, ability.left);   // dimmer: not unlocked yet
+    // Ability: icon, with a dark shade that drains from the top as it recharges.
+    const Ability& ab = m_player.GetAbility();
+    DrawPill(frame, ability, HUD_CREAM, HUD_CREAM, ability.left);
+    DrawIcon(frame, m_abilityIcons[(int)ab.Type()], ability.left + R - 14, ability.top + R - 7, 28, 14);
+    float cd = ab.CooldownFraction();
+    if (ab.IsActive())
+    {
+        // Lasting ability: a green glow that drains as time runs out.
+        int glowFrom = ability.bottom - (int)((ability.bottom - ability.top) * ab.ActiveFraction());
+        for (int y = glowFrom; y < ability.bottom; ++y)
+            for (int x = ability.left; x < ability.right; ++x)
+                if (PillDist(ability, x + 0.5f, y + 0.5f) < -2.0f)
+                {
+                    DWORD& p = frame.pixels[y * W + x];
+                    p = ((p >> 1) & 0x7F7F7F) + 0x205A20;   // half color + green
+                }
+    }
+    else if (cd > 0.0f || ab.IsAirborne())
+    {
+        int shadeTo = ab.IsAirborne() ? ability.bottom : ability.bottom - (int)((ability.bottom - ability.top) * (1.0f - cd));
+        for (int y = ability.top; y < shadeTo; ++y)
+            for (int x = ability.left; x < ability.right; ++x)
+                if (PillDist(ability, x + 0.5f, y + 0.5f) < -2.0f)
+                {
+                    DWORD& p = frame.pixels[y * W + x];
+                    p = (p >> 1) & 0x7F7F7F;   // half as bright
+                }
+    }
 
     if (m_data.heldItem != ItemType::None)
         DrawIcon(frame, m_itemIcons[(int)m_data.heldItem], item.left + R - 14, item.top + R - 13, 28, 26);
@@ -1211,6 +1540,12 @@ void RunScreen::DrawHud(Frame& frame, const RECT& minimap)
     {
         RECT key = { item.right - 10, item.bottom - 12, item.right + 4, item.bottom + 2 };
         ShadowText(dc, L"Q", key, DT_CENTER | DT_SINGLELINE, RGB(255, 255, 255));
+    }
+
+    // Key hint on the ability slot (dim while recharging)
+    {
+        RECT key = { ability.right - 10, ability.bottom - 12, ability.right + 4, ability.bottom + 2 };
+        ShadowText(dc, L"E", key, DT_CENTER | DT_SINGLELINE, ab.IsReady() ? RGB(255, 255, 255) : RGB(120, 120, 120));
     }
 
     // Messages, bottom middle: the latest message, and "out of breath" under it

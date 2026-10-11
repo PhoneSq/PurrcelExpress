@@ -168,7 +168,7 @@ Game::Game()
     : m_hwnd(nullptr),
     m_state(GameState::MainMenu),
     m_backDC(nullptr), m_backBitmap(nullptr), m_oldBitmap(nullptr),
-    m_mainMenu(nullptr), m_deliverySelect(nullptr), m_shop(nullptr), m_run(nullptr), m_gameOver(nullptr)
+    m_mainMenu(nullptr), m_characterSelect(nullptr), m_deliverySelect(nullptr), m_shop(nullptr), m_run(nullptr), m_gameOver(nullptr)
 {
     m_frame.pixels = nullptr;
     m_frame.dc = nullptr;
@@ -181,6 +181,7 @@ Game::~Game()
     m_input.SetMouseLockWanted(false);   // give the cursor back
 
     delete m_mainMenu;
+    delete m_characterSelect;
     delete m_deliverySelect;
     delete m_shop;
     delete m_run;
@@ -225,6 +226,7 @@ bool Game::Init(HWND hwnd)
     m_data.rng.Seed((unsigned)GetTickCount());
 
     m_mainMenu = new MainMenuScreen();
+    m_characterSelect = new CharacterSelectScreen(m_data);
     m_deliverySelect = new DeliverySelectScreen(m_data);
     m_shop = new ShopScreen(m_data);
     m_run = new RunScreen(m_data);
@@ -239,6 +241,7 @@ Screen* Game::ScreenFor(GameState state) const
     switch (state)
     {
     case GameState::MainMenu:       return m_mainMenu;
+    case GameState::CharacterSelect: return m_characterSelect;
     case GameState::DeliverySelect: return m_deliverySelect;
     case GameState::Shop:           return m_shop;
     case GameState::Run:      return m_run;

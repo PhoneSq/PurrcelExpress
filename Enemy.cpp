@@ -93,7 +93,8 @@ Enemy::Enemy()
     m_targetX(-1), m_targetY(-1), m_nextX(-1), m_nextY(-1),
     m_repathTimer(0), m_biteCooldown(0), m_moveX(0), m_moveY(0),
     m_homeX(0), m_homeY(0), m_avoidX(-1000.0f), m_avoidY(-1000.0f),
-    m_mode(Mode::Roam), m_lureX(0), m_lureY(0), m_lureTimer(0), m_justSpotted(false),
+    m_mode(Mode::Roam), m_lureX(0), m_lureY(0), m_lureTimer(0),
+    m_knockVX(0), m_knockVY(0), m_knockTime(0), m_stun(0), m_justSpotted(false),
     m_roamPause(0), m_rng(1)
 {
 }
@@ -115,10 +116,27 @@ void Enemy::Spawn(float x, float y, EnemyType type, float avoidX, float avoidY)
     m_avoidY = avoidY;
     m_mode = Mode::Roam;
     m_lureTimer = 0.0f;
+    m_knockTime = m_stun = 0.0f;
     m_justSpotted = false;
     m_rng = (unsigned)m_homeX * 73856093u ^ (unsigned)m_homeY * 19349663u ^ ((unsigned)type + 1) * 83492791u;
     if (m_rng == 0) m_rng = 1;
     m_roamPause = (NextRandom() % 100) / 100.0f * DOG_ROAM_PAUSE_MAX;   // don't all start at once
+}
+
+void Enemy::Knockback(float fromX, float fromY)
+{
+    float dx = m_x - fromX, dy = m_y - fromY;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 0.01f)   // right on top of the cat: any direction
+    {
+        float a = (NextRandom() % 628) / 100.0f;
+        dx = cosf(a); dy = sinf(a); len = 1.0f;
+    }
+    m_knockVX = dx / len * KNOCKBACK_SPEED;
+    m_knockVY = dy / len * KNOCKBACK_SPEED;
+    m_knockTime = KNOCKBACK_DISTANCE / KNOCKBACK_SPEED;
+    m_stun = 0.0f;
+    m_nextX = m_nextY = -1;   // repath once it's back on its feet
 }
 
 void Enemy::Spot()
@@ -430,6 +448,25 @@ void Enemy::Update(float dt, const Map& map, const Player& player,
     const Enemy* all, int count)
 {
     m_justSpotted = false;
+
+    // Flying from a ground pound (stops at walls), then dazed.
+    if (m_knockTime > 0.0f)
+    {
+        float step = dt < m_knockTime ? dt : m_knockTime;
+        float nx = m_x + m_knockVX * step, ny = m_y + m_knockVY * step;
+        float oldX = m_x, oldY = m_y;
+        if (!map.IsWall((int)nx, (int)m_y)) m_x = nx;
+        if (!map.IsWall((int)m_x, (int)ny)) m_y = ny;
+        if (m_x != oldX || m_y != oldY) { m_moveX = oldX - m_x; m_moveY = oldY - m_y; }   // keeps facing the cat
+        m_knockTime -= dt;
+        if (m_knockTime <= 0.0f) { m_knockTime = 0.0f; m_stun = KNOCKBACK_STUN; }
+        return;
+    }
+    if (m_stun > 0.0f)
+    {
+        m_stun -= dt;
+        return;
+    }
 
     // Just bit someone: sit still for a moment.
     if (m_biteCooldown > 0.0f)
