@@ -1,24 +1,77 @@
 #include <math.h>
 #include "Renderer.h"
+#include <objidl.h>    // GDI+ needs this (WIN32_LEAN_AND_MEAN leaves it out)
+#include <gdiplus.h>   // PNG loading, built into Windows
 #include "World.h"
 #include "Player.h"
+#include "Enemy.h"
 #include "Config.h"
+#include "AItexture.h"   // all the art made in code lives there
 
-void Renderer::DrawWorld(DWORD* pixels, const Map& map, const Player& p)
+#ifdef _MSC_VER
+#pragma comment(lib, "gdiplus.lib")
+#endif
+
+// =====================================================
+// WORLD (sky, floor, walls)
+// =====================================================
+
+static inline DWORD Fog(DWORD c, float dist, DWORD haze, float hazeDist)
 {
-    const DWORD CEILING = 0x101014;
-    const DWORD FLOOR = 0x1C1C1C;
+    float t = dist / hazeDist;
+    if (t > 1.0f) t = 1.0f;
+    t = t * t * (3.0f - 2.0f * t);   // smooth
+    int r = (int)((c >> 16) & 255), g = (int)((c >> 8) & 255), b = (int)(c & 255);
+    int fr = (haze >> 16) & 255, fg = (haze >> 8) & 255, fb = haze & 255;
+    return Rgb(r + (int)((fr - r) * t), g + (int)((fg - g) * t), b + (int)((fb - b) * t));
+}
 
-    for (int y = 0; y < SCREEN_H; ++y)
+// Warm street light on top of a color. light: 0..1
+static inline DWORD Lit(DWORD c, float light)
+{
+    if (light <= 0.0f) return c;
+    int r = (int)((c >> 16) & 255), g = (int)((c >> 8) & 255), b = (int)(c & 255);
+    r = (int)(r * (1.0f + 0.9f * light) + 45 * light);
+    g = (int)(g * (1.0f + 0.6f * light) + 28 * light);
+    b = (int)(b * (1.0f + 0.15f * light));
+    return Rgb(r, g, b);
+}
+
+void Renderer::DrawWorld(DWORD* pixels, const Map& map, const Camera& p)
+{
+    const int horizon = SCREEN_H / 2;
+
+    // ----- Sky: dusk gradient -----
+    for (int y = 0; y < horizon; ++y)
     {
-        DWORD c = (y < SCREEN_H / 2) ? CEILING : FLOOR;
-        for (int x = 0; x < SCREEN_W; ++x)
-            pixels[y * SCREEN_W + x] = c;
+        DWORD c = SkyColor((float)y / horizon, m_night);   // 0 top .. 1 horizon
+        for (int x = 0; x < SCREEN_W; ++x) pixels[y * SCREEN_W + x] = c;
     }
 
+    // ----- Floor: cast row by row -----
+    float rd0x = p.DirX() - p.PlaneX(), rd0y = p.DirY() - p.PlaneY();
+    float rd1x = p.DirX() + p.PlaneX(), rd1y = p.DirY() + p.PlaneY();
+    for (int y = horizon; y < SCREEN_H; ++y)
+    {
+        float rowDist = (0.5f * SCREEN_H) / (y - horizon + 0.5f);
+        float stepX = rowDist * (rd1x - rd0x) / SCREEN_W;
+        float stepY = rowDist * (rd1y - rd0y) / SCREEN_W;
+        float fx = p.X() + rowDist * rd0x;
+        float fy = p.Y() + rowDist * rd0y;
+
+        for (int x = 0; x < SCREEN_W; ++x)
+        {
+            float light = m_night ? map.LightAt(fx, fy) : 0.0f;
+            pixels[y * SCREEN_W + x] = Fog(Lit(FloorColor(map, fx, fy), light),
+                rowDist * (1.0f - 0.6f * light), m_hazeColor, m_hazeDist);
+            fx += stepX;
+            fy += stepY;
+        }
+    }
+
+    // ----- Walls: DDA, one ray per column -----
     for (int x = 0; x < SCREEN_W; ++x)
     {
-        // ray direction for this column
         float camX = 2.0f * x / SCREEN_W - 1.0f;
         float rayX = p.DirX() + p.PlaneX() * camX;
         float rayY = p.DirY() + p.PlaneY() * camX;
@@ -34,34 +87,135 @@ void Renderer::DrawWorld(DWORD* pixels, const Map& map, const Player& p)
         if (rayY < 0) { stepY = -1; sideY = (p.Y() - mapY) * deltaY; }
         else { stepY = 1; sideY = (mapY + 1.0f - p.Y()) * deltaY; }
 
-        // DDA: step through grid cells until we hit a wall
+        // Low walls (hedges) the ray passes over on its way to a real wall.
+        struct LowHit { float d1, d2; int side, mx, my; };
+        const int MAX_LOW = 8;
+        LowHit lows[MAX_LOW];
+        int lowCount = 0;
+
         int side = 0;
         while (true)
         {
             if (sideX < sideY) { sideX += deltaX; mapX += stepX; side = 0; }
             else { sideY += deltaY; mapY += stepY; side = 1; }
-            if (map.IsWall(mapX, mapY)) break;
+
+            TileType t = map.TileAt(mapX, mapY);
+            if (Map::IsLowWall(t))
+            {
+                // Remember where the ray enters and leaves this tile, keep going.
+                if (lowCount < MAX_LOW)
+                {
+                    LowHit& h = lows[lowCount++];
+                    h.d1 = (side == 0) ? sideX - deltaX : sideY - deltaY;
+                    h.d2 = (sideX < sideY) ? sideX : sideY;
+                    h.side = side; h.mx = mapX; h.my = mapY;
+                }
+                continue;
+            }
+            if (map.IsSolid(mapX, mapY)) break;   // props are sprites, rays pass them
         }
 
         float dist = (side == 0) ? sideX - deltaX : sideY - deltaY;
         if (dist < 0.0001f) dist = 0.0001f;
         m_depth[x] = dist;
 
-        int lineH = (int)(SCREEN_H / dist);
-        int top = SCREEN_H / 2 - lineH / 2;
-        int bottom = SCREEN_H / 2 + lineH / 2;
-        if (top < 0)           top = 0;
-        if (bottom > SCREEN_H) bottom = SCREEN_H;
+        // Where along the wall face the ray hit (0..1).
+        float wallX = (side == 0) ? p.Y() + dist * rayY : p.X() + dist * rayX;
+        wallX -= floorf(wallX);
+        if ((side == 0 && rayX > 0) || (side == 1 && rayY < 0)) wallX = 1.0f - wallX;
 
-        // green, darker with distance, darker on Y-facing sides
-        float light = 1.0f - dist / 12.0f;
-        if (light < 0.15f) light = 0.15f;
-        if (side == 1) light *= 0.7f;
-        DWORD green = (DWORD)(220 * light);
-        DWORD color = (green / 5) << 16 | green << 8 | (green / 5);
+        TileType tile = map.TileAt(mapX, mapY);
 
-        for (int y = top; y < bottom; ++y)
-            pixels[y * SCREEN_W + x] = color;
+        // The tile on the side the ray came from: a path there means a front door.
+        int outX = (side == 0) ? mapX - stepX : mapX;
+        int outY = (side == 1) ? mapY - stepY : mapY;
+        bool door = map.TileAt(outX, outY) == TILE_PATH && map.IsHouse(mapX, mapY);
+
+        // Is the left / right side of this wall section a real corner?
+        // (The neighbor along the face isn't the same building.)
+        int alongX = (side == 0) ? 0 : 1, alongY = (side == 0) ? 1 : 0;
+        bool flipped = (side == 0 && rayX > 0) || (side == 1 && rayY < 0);
+        TileType lowSide = map.TileAt(mapX - alongX, mapY - alongY);   // where u = 0 before flipping
+        TileType highSide = map.TileAt(mapX + alongX, mapY + alongY);
+        bool lowEdge = lowSide != tile || map.IsSolid(outX - alongX, outY - alongY);
+        bool highEdge = highSide != tile || map.IsSolid(outX + alongX, outY + alongY);
+        bool edgeL = flipped ? highEdge : lowEdge;
+        bool edgeR = flipped ? lowEdge : highEdge;
+
+        // Street light on this wall face (sampled just outside it).
+        float hitX = p.X() + rayX * dist - rayX * 0.05f;
+        float hitY = p.Y() + rayY * dist - rayY * 0.05f;
+        float light = m_night ? map.LightAt(hitX, hitY) : 0.0f;
+        float fogDist = dist * (1.0f - 0.6f * light);
+
+        float lineH = SCREEN_H / dist;
+        float top = horizon - lineH * 0.5f;
+        int y0 = (int)top;           if (y0 < 0) y0 = 0;
+        int y1 = (int)(top + lineH); if (y1 > SCREEN_H) y1 = SCREEN_H;
+
+        float shade = (side == 1) ? 0.78f : 1.0f;   // corners read clearly
+
+        for (int y = y0; y < y1; ++y)
+        {
+            float v = (y - top) / lineH;
+            DWORD c = WallColor(tile, mapX, mapY, wallX, v, door, m_night, edgeL, edgeR);
+            pixels[y * SCREEN_W + x] = Fog(Lit(Scale(c, shade), light), fogDist, m_hazeColor, m_hazeDist);
+        }
+
+        // ----- Low walls (hedges), far to near, over whatever is behind them -----
+        m_lowDepth[x] = 1e9f;
+        m_lowTop[x] = SCREEN_H;
+        const float eyeAbove = 0.5f - HEDGE_HEIGHT;   // the eye is a bit above the hedge tops
+
+        for (int i = lowCount - 1; i >= 0; --i)
+        {
+            const LowHit& h = lows[i];
+            float d1 = h.d1 < 0.05f ? 0.05f : h.d1;
+            float d2 = h.d2 < d1 ? d1 : h.d2;
+
+            float bottom = horizon + 0.5f * SCREEN_H / d1;           // where it meets the ground
+            float top1 = horizon + eyeAbove * SCREEN_H / d1;       // top edge of the near face
+            float top2 = horizon + eyeAbove * SCREEN_H / d2;       // far edge of the top surface
+
+            // Position along the face in world units (mirrored on the far
+            // sides so the pattern reads left-to-right from every angle).
+            float along = (h.side == 0) ? p.Y() + d1 * rayY : p.X() + d1 * rayX;
+            if ((h.side == 0 && rayX > 0) || (h.side == 1 && rayY < 0)) along = -along;
+
+            float hx = p.X() + rayX * d1 - rayX * 0.05f, hy = p.Y() + rayY * d1 - rayY * 0.05f;
+            float hl = m_night ? map.LightAt(hx, hy) : 0.0f;
+            float hShade = (h.side == 1) ? 0.85f : 1.0f;
+
+            // Side face
+            int fy0 = (int)top1;   if (fy0 < 0) fy0 = 0;
+            int fy1 = (int)bottom; if (fy1 > SCREEN_H) fy1 = SCREEN_H;
+            for (int y = fy0; y < fy1; ++y)
+            {
+                float v = (y - top1) / (bottom - top1);
+                DWORD c = HedgeSideColor(along, v);
+                pixels[y * SCREEN_W + x] = Fog(Lit(Scale(c, hShade), hl), d1 * (1.0f - 0.6f * hl),
+                    m_hazeColor, m_hazeDist);
+            }
+
+            // Top surface, seen from slightly above
+            // Up close the top edge can be far below the screen: clamp both ends.
+            int ty0 = (int)top2; if (ty0 < 0) ty0 = 0; if (ty0 > SCREEN_H) ty0 = SCREEN_H;
+            int ty1 = fy0;       if (ty1 > SCREEN_H) ty1 = SCREEN_H;
+            for (int y = ty0; y < ty1; ++y)
+            {
+                float rowDist = eyeAbove * SCREEN_H / (y + 0.5f - horizon);
+                float wx = p.X() + rayX * rowDist, wy = p.Y() + rayY * rowDist;
+                DWORD c = HedgeTopColor(wx, wy);
+                pixels[y * SCREEN_W + x] = Fog(Lit(c, hl), rowDist * (1.0f - 0.6f * hl),
+                    m_hazeColor, m_hazeDist);
+            }
+
+            if (i == 0)   // nearest one hides sprites behind it
+            {
+                m_lowDepth[x] = d1;
+                m_lowTop[x] = ty0;
+            }
+        }
     }
 }
 
@@ -76,7 +230,7 @@ static void Blend(DWORD& dst, DWORD color, int alpha)
     dst = (DWORD)(r << 16 | g << 8 | b);
 }
 
-void Renderer::DrawMarker(DWORD* pixels, const Player& p,
+void Renderer::DrawMarker(DWORD* pixels, const Camera& p,
     float worldX, float worldY, DWORD color, float pulse)
 {
     // Into camera space: tx = sideways, ty = depth.
@@ -117,6 +271,7 @@ void Renderer::DrawMarker(DWORD* pixels, const Player& p,
 
         for (int y = y0; y < y1; ++y)
         {
+            if (HiddenByHedge(x, y, ty)) continue;
             float up = (float)(bottom - y) / height;          // 0 floor, 1 top
             float strength = across * (1.0f - 0.7f * up) * (0.6f + 0.4f * pulse);
             Blend(pixels[y * SCREEN_W + x], color, (int)(230 * strength));
@@ -124,7 +279,7 @@ void Renderer::DrawMarker(DWORD* pixels, const Player& p,
     }
 }
 
-void Renderer::DrawEnemy(DWORD* pixels, const Player& p,
+void Renderer::DrawEnemy(DWORD* pixels, const Camera& p,
     float worldX, float worldY, DWORD color)
 {
     float sx = worldX - p.X();
@@ -152,8 +307,6 @@ void Renderer::DrawEnemy(DWORD* pixels, const Player& p,
     int g = (int)(((color >> 8) & 255) * light);
     int b = (int)((color & 255) * light);
     DWORD body = (DWORD)(r << 16 | g << 8 | b);
-    DWORD eye = 0xF0F0F0;
-    DWORD pupil = 0x101018;
 
     for (int x = left; x < left + width; ++x)
     {
@@ -165,29 +318,11 @@ void Renderer::DrawEnemy(DWORD* pixels, const Player& p,
         for (int y = top; y < bottom; ++y)
         {
             if (y < 0 || y >= SCREEN_H) continue;
+            if (HiddenByHedge(x, y, ty)) continue;
             float v = (float)(y - top) / height;              // 0 top, 1 bottom
 
-            // Squat blob: rounded top corners and rounded bottom corners.
-            float cornerV = (v < 0.5f) ? (0.3f - v) / 0.3f : (v - 0.85f) / 0.15f;
-            if (cornerV > 0.0f && fabsf(u) > 0.6f)
-            {
-                float cu = (fabsf(u) - 0.6f) / 0.4f;
-                if (cu * cu + cornerV * cornerV > 1.0f) continue;
-            }
-
-            DWORD c = body;
-
-            // Angry eyes: slanted brow cuts off the inner top of each eye.
-            for (int side = -1; side <= 1; side += 2)
-            {
-                float ex = u - side * 0.35f, ey = (v - 0.35f) * 2.0f;
-                if (ex * ex + ey * ey < 0.05f)
-                {
-                    bool underBrow = ey < -0.05f - side * ex * 1.2f;
-                    if (underBrow) continue;   // brow: stays body color
-                    c = (ex * ex + (ey - 0.05f) * (ey - 0.05f) < 0.012f) ? pupil : eye;
-                }
-            }
+            DWORD c;
+            if (!DogPlaceholderPixel(u, v, body, c)) continue;
             pixels[y * SCREEN_W + x] = c;
         }
     }
@@ -202,5 +337,439 @@ void Renderer::DrawCrosshair(DWORD* pixels)
         pixels[cy * SCREEN_W + cx - i] = 0xFFFFFF;
         pixels[(cy + i) * SCREEN_W + cx] = 0xFFFFFF;
         pixels[(cy - i) * SCREEN_W + cx] = 0xFFFFFF;
+    }
+}
+
+
+// =====================================================
+// MINIMAP
+// =====================================================
+
+// Express markers blink, faster when time is almost up.
+static bool ExpressBlinkOn(float timeLeft)
+{
+    float rate = (timeLeft < EXPRESS_URGENT) ? 6.0f : 2.0f;
+    return ((int)(timeLeft * rate) % 2) == 0;
+}
+
+static void FillSquare(DWORD* pixels, int cx, int cy, int size, DWORD color)
+{
+    int half = size / 2;
+    for (int y = cy - half; y <= cy + half; ++y)
+        for (int x = cx - half; x <= cx + half; ++x)
+            if (x >= 0 && y >= 0 && x < SCREEN_W && y < SCREEN_H)
+                pixels[y * SCREEN_W + x] = color;
+}
+
+RECT Renderer::DrawMinimap(DWORD* pixels, const Map& map, const Player& player,
+    const DeliveryRun& run, const Enemy* enemies, int enemyCount,
+    float /*time*/)
+{
+    // Bigger maps get smaller cells so the minimap stays about the same size.
+    int cell = 112 / map.Height();
+    if (cell < 2) cell = 2;
+    if (cell > 7) cell = 7;
+
+    const int margin = 8;
+    int w = cell * map.Width(), h = cell * map.Height();
+    int left = SCREEN_W - margin - w;
+    int top = margin;
+
+    // Frame + background (75% opaque so the view shows through a little).
+    for (int y = top - 1; y <= top + h; ++y)
+        for (int x = left - 1; x <= left + w; ++x)
+        {
+            DWORD& d = pixels[y * SCREEN_W + x];
+            bool border = (x == left - 1 || y == top - 1 || x == left + w || y == top + h);
+            if (border) { d = 0xB4B4B4; continue; }
+
+            int tx = (x - left) / cell, ty = (y - top) / cell;
+            DWORD c = MinimapTileColor(map.TileAt(tx, ty));
+            d = ((d & 0xFCFCFC) >> 2) + ((c & 0xFCFCFC) >> 2) * 3;
+        }
+
+    auto toX = [&](float wx) { return left + (int)(wx * cell); };
+    auto toY = [&](float wy) { return top + (int)(wy * cell); };
+    int dot = cell + 1;
+
+    // Start (green)
+    FillSquare(pixels, toX(run.StartX()), toY(run.StartY()), dot, 0x50FF50);
+
+    // Stops: orange, grey once delivered, blinking cyan if express.
+    for (int i = 0; i < run.StopCount(); ++i)
+    {
+        const Stop& s = run.GetStop(i);
+        DWORD c = s.delivered ? 0x6E6E6E : 0xFF8C00;
+        int size = dot;
+        if (s.express && !s.delivered)
+        {
+            c = ExpressBlinkOn(s.timeLeft) ? 0x00E6FF : 0x005064;
+            size = dot + 2;
+        }
+        FillSquare(pixels, toX(s.x), toY(s.y), size, c);
+    }
+
+    // Enemies (red)
+    for (int i = 0; i < enemyCount; ++i)
+        FillSquare(pixels, toX(enemies[i].X()), toY(enemies[i].Y()), dot,
+            enemies[i].IsChasing() ? 0xFF2020 : 0x903030);   // dim = still wandering
+
+    // You: facing line + white dot on top.
+    int px = toX(player.X()), py = toY(player.Y());
+    int len = cell * 2;
+    for (int i = 0; i <= len; ++i)
+    {
+        int x = px + (int)(player.DirX() * i), y = py + (int)(player.DirY() * i);
+        if (x >= 0 && y >= 0 && x < SCREEN_W && y < SCREEN_H) pixels[y * SCREEN_W + x] = 0xFFFFFF;
+    }
+    FillSquare(pixels, px, py, dot, 0xFFFFFF);
+
+    RECT r = { left, top, left + w, top + h };
+    return r;
+}
+
+
+// =====================================================
+// TEXTURE (PNG loading with GDI+)
+// =====================================================
+
+Texture::Texture()
+    : m_width(0), m_height(0), m_pixels(nullptr), m_alpha(nullptr),
+    m_x0(0), m_y0(0), m_x1(0), m_y1(0)
+{
+}
+
+Texture::~Texture()
+{
+    Free();
+}
+
+void Texture::Free()
+{
+    delete[] m_pixels;
+    delete[] m_alpha;
+    m_pixels = nullptr;
+    m_alpha = nullptr;
+    m_width = m_height = 0;
+}
+
+// GDI+ is started once, the first time a texture loads.
+static bool StartGdiPlus()
+{
+    static bool started = false;
+    static ULONG_PTR token = 0;
+    if (!started)
+    {
+        Gdiplus::GdiplusStartupInput input;
+        started = Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok;
+    }
+    return started;
+}
+
+bool Texture::Load(const wchar_t* fileName)
+{
+    Free();
+
+    // Folder of the .exe (with trailing backslash).
+    wchar_t exeDir[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
+    for (int i = lstrlenW(exeDir) - 1; i >= 0; --i)
+        if (exeDir[i] == L'\\' || exeDir[i] == L'/') { exeDir[i + 1] = 0; break; }
+
+    // Places to look, in order.
+    const wchar_t* prefixes[4] = { L"", exeDir, exeDir, exeDir };
+    const wchar_t* middles[4] = { L"assets\\", L"assets\\", L"..\\assets\\", L"..\\..\\assets\\" };
+
+    for (int i = 0; i < 4; ++i)
+    {
+        wchar_t path[MAX_PATH * 2];
+        lstrcpynW(path, prefixes[i], MAX_PATH);
+        lstrcatW(path, middles[i]);
+        lstrcatW(path, fileName);
+
+        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) continue;
+        if (LoadFile(path)) return true;
+    }
+
+    OutputDebugStringW(L"Texture NOT found: assets\\");
+    OutputDebugStringW(fileName);
+    OutputDebugStringW(L"\n");
+    return false;
+}
+
+bool Texture::LoadFile(const wchar_t* path)
+{
+    if (!StartGdiPlus()) return false;
+
+    Gdiplus::Bitmap bitmap(path);
+    if (bitmap.GetLastStatus() != Gdiplus::Ok) return false;
+
+    int w = (int)bitmap.GetWidth(), h = (int)bitmap.GetHeight();
+    if (w <= 0 || h <= 0) return false;
+
+    Gdiplus::Rect area(0, 0, w, h);
+    Gdiplus::BitmapData data;
+    if (bitmap.LockBits(&area, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &data) != Gdiplus::Ok)
+        return false;
+
+    m_width = w;
+    m_height = h;
+    m_pixels = new DWORD[w * h];
+    m_alpha = new unsigned char[w * h];
+
+    for (int y = 0; y < h; ++y)
+    {
+        const DWORD* row = (const DWORD*)((const BYTE*)data.Scan0 + y * data.Stride);
+        for (int x = 0; x < w; ++x)
+        {
+            m_pixels[y * w + x] = row[x] & 0x00FFFFFF;          // 0xAARRGGBB -> 0x00RRGGBB
+            m_alpha[y * w + x] = (unsigned char)(row[x] >> 24);
+        }
+    }
+    bitmap.UnlockBits(&data);
+
+    ComputeBounds();
+    return true;
+}
+
+void Texture::ComputeBounds()
+{
+    // Box around everything that isn't (nearly) transparent.
+    int w = m_width, h = m_height;
+    m_x0 = w; m_y0 = h; m_x1 = 0; m_y1 = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            if (m_alpha[y * w + x] > 16)
+            {
+                if (x < m_x0) m_x0 = x;
+                if (y < m_y0) m_y0 = y;
+                if (x + 1 > m_x1) m_x1 = x + 1;
+                if (y + 1 > m_y1) m_y1 = y + 1;
+            }
+    if (m_x1 <= m_x0 || m_y1 <= m_y0) { m_x0 = 0; m_y0 = 0; m_x1 = w; m_y1 = h; }
+}
+
+void Texture::Create(int width, int height)
+{
+    Free();
+    m_width = width;
+    m_height = height;
+    m_pixels = new DWORD[width * height];
+    m_alpha = new unsigned char[width * height];
+    for (int i = 0; i < width * height; ++i) { m_pixels[i] = 0; m_alpha[i] = 0; }
+}
+
+void Texture::SetPixel(int x, int y, DWORD color, int alpha)
+{
+    if (!m_pixels || x < 0 || y < 0 || x >= m_width || y >= m_height) return;
+    m_pixels[y * m_width + x] = color & 0x00FFFFFF;
+    m_alpha[y * m_width + x] = (unsigned char)(alpha < 0 ? 0 : (alpha > 255 ? 255 : alpha));
+}
+
+void Texture::FinishEdits()
+{
+    if (m_pixels) ComputeBounds();
+}
+
+DWORD Texture::Sample(float u, float v, int& outAlpha) const
+{
+    outAlpha = 0;
+    if (!m_pixels) return 0;
+
+    int x = m_x0 + (int)(u * (m_x1 - m_x0));
+    int y = m_y0 + (int)(v * (m_y1 - m_y0));
+    if (x < m_x0) x = m_x0;
+    if (x >= m_x1) x = m_x1 - 1;
+    if (y < m_y0) y = m_y0;
+    if (y >= m_y1) y = m_y1 - 1;
+
+    outAlpha = m_alpha[y * m_width + x];
+    return m_pixels[y * m_width + x];
+}
+
+
+// =====================================================
+// CAMERA
+// =====================================================
+
+// True if a camera here would be clear of walls, with a small gap
+// so a wall never fills the whole screen.
+static bool CameraSpotClear(const Map& map, float x, float y)
+{
+    const float GAP = 0.18f;
+    return !map.IsSolid((int)x, (int)y) &&
+        !map.IsSolid((int)(x + GAP), (int)y) && !map.IsSolid((int)(x - GAP), (int)y) &&
+        !map.IsSolid((int)x, (int)(y + GAP)) && !map.IsSolid((int)x, (int)(y - GAP));
+}
+
+Camera MakeCamera(const Player& player, const Map& map, bool thirdPerson, float& outDistance)
+{
+    Camera cam;
+    cam.x = player.X();        cam.y = player.Y();
+    cam.dirX = player.DirX();  cam.dirY = player.DirY();
+    cam.planeX = player.PlaneX(); cam.planeY = player.PlaneY();
+    outDistance = 0.0f;
+
+    if (!thirdPerson) return cam;
+
+    // Walk straight back from the player until the full distance
+    // or a wall gets in the way.
+    const float STEP = 0.05f;
+    for (float d = STEP; d <= THIRD_PERSON_DISTANCE; d += STEP)
+    {
+        float tx = player.X() - player.DirX() * d;
+        float ty = player.Y() - player.DirY() * d;
+        if (!CameraSpotClear(map, tx, ty)) break;
+        cam.x = tx;
+        cam.y = ty;
+        outDistance = d;
+    }
+    return cam;
+}
+
+
+// =====================================================
+// SPRITES
+// =====================================================
+
+void Renderer::DrawSprite(DWORD* pixels, const Camera& p, float worldX, float worldY,
+    const Texture& tex, float scale, bool mirror, float fade, float light,
+    float lift)
+{
+    if (!tex.IsLoaded() || fade <= 0.0f) return;
+
+    float sx = worldX - p.X();
+    float sy = worldY - p.Y();
+    float invDet = 1.0f / (p.PlaneX() * p.DirY() - p.DirX() * p.PlaneY());
+    float tx = invDet * (p.DirY() * sx - p.DirX() * sy);
+    float ty = invDet * (-p.PlaneY() * sx + p.PlaneX() * sy);
+    if (ty < 0.1f) return;
+
+    // Height: a fraction of a wall at that distance. Width keeps the picture's shape.
+    int wallH = (int)(SCREEN_H / ty);
+    int height = (int)(wallH * scale);
+    int width = height * tex.VisibleWidth() / tex.VisibleHeight();
+    if (height < 2 || width < 2) return;
+
+    int centerX = (int)((SCREEN_W / 2) * (1.0f + tx / ty));
+    int bottom = SCREEN_H / 2 + wallH / 2 - (int)(lift * wallH);   // feet on the floor (or lifted)
+    int top = bottom - height;
+    int left = centerX - width / 2;
+
+    float fogDist = ty * (1.0f - 0.6f * light);
+
+    for (int x = left; x < left + width; ++x)
+    {
+        if (x < 0 || x >= SCREEN_W) continue;
+        if (ty >= m_depth[x]) continue;   // a wall is in front
+
+        float u = (x - left + 0.5f) / width;
+        if (mirror) u = 1.0f - u;
+
+        for (int y = top; y < bottom; ++y)
+        {
+            if (y < 0 || y >= SCREEN_H) continue;
+            if (HiddenByHedge(x, y, ty)) continue;
+            float v = (y - top + 0.5f) / height;
+
+            int alpha;
+            DWORD c = tex.Sample(u, v, alpha);
+            alpha = (int)(alpha * fade);
+            if (alpha <= 8) continue;
+
+            // Same street light and haze as the walls around it.
+            DWORD shaded = Fog(Lit(c, light), fogDist, m_hazeColor, m_hazeDist);
+
+            if (alpha >= 250) pixels[y * SCREEN_W + x] = shaded;
+            else              Blend(pixels[y * SCREEN_W + x], shaded, alpha);
+        }
+    }
+}
+
+
+// =====================================================
+// GLOW + PROPS (pictures made in code)
+// =====================================================
+
+void Renderer::DrawGlow(DWORD* pixels, const Camera& p, float worldX, float worldY,
+    float height, float radius, DWORD color)
+{
+    float sx = worldX - p.X(), sy = worldY - p.Y();
+    float invDet = 1.0f / (p.PlaneX() * p.DirY() - p.DirX() * p.PlaneY());
+    float tx = invDet * (p.DirY() * sx - p.DirX() * sy);
+    float ty = invDet * (-p.PlaneY() * sx + p.PlaneX() * sy);
+    if (ty < 0.2f) return;
+
+    float wallH = SCREEN_H / ty;
+    int cx = (int)((SCREEN_W / 2) * (1.0f + tx / ty));
+    int cy = (int)(SCREEN_H / 2 + wallH / 2 - height * wallH);
+    int r = (int)(radius * wallH);
+    if (r < 2) r = 2;
+
+    // Dimmer from far away (but never gone: that's the point of a lamp).
+    float strength = 0.75f - ty / 40.0f;
+    if (strength < 0.35f) strength = 0.35f;
+
+    int cr = (int)((color >> 16) & 255), cg = (int)((color >> 8) & 255), cb = (int)(color & 255);
+
+    for (int y = cy - r; y <= cy + r; ++y)
+    {
+        if (y < 0 || y >= SCREEN_H) continue;
+        for (int x = cx - r; x <= cx + r; ++x)
+        {
+            if (x < 0 || x >= SCREEN_W || ty >= m_depth[x]) continue;
+            float dx = (float)(x - cx) / r, dy = (float)(y - cy) / r;
+            float d2 = dx * dx + dy * dy;
+            if (d2 >= 1.0f) continue;
+            float k = (1.0f - d2) * (1.0f - d2) * strength;   // additive, soft edge
+
+            DWORD& d = pixels[y * SCREEN_W + x];
+            int nr = (int)((d >> 16) & 255) + (int)(cr * k);
+            int ng = (int)((d >> 8) & 255) + (int)(cg * k);
+            int nb = (int)(d & 255) + (int)(cb * k);
+            d = Rgb(nr, ng, nb);
+        }
+    }
+}
+
+// ----- prop pictures -----
+
+void Renderer::SetNight(bool night)
+{
+    m_night = night;
+    m_hazeColor = HazeColor(night);
+    m_hazeDist = HazeDistance(night);
+}
+
+Renderer::Renderer()
+{
+    MakeTree(m_tree);
+    MakeBush(m_bush);
+    MakeFlowers(m_flowers);
+    MakeLamp(m_lampOn, true);
+    MakeLamp(m_lampOff, false);
+    SetNight(true);
+    for (int i = 0; i < SCREEN_W; ++i) { m_depth[i] = 1e9f; m_lowDepth[i] = 1e9f; m_lowTop[i] = SCREEN_H; }
+}
+
+const Texture& Renderer::PropTexture(int tile) const
+{
+    switch (tile)
+    {
+    case TILE_TREE:    return m_tree;
+    case TILE_FLOWERS: return m_flowers;
+    case TILE_LAMP:    return m_night ? m_lampOn : m_lampOff;
+    default:           return m_bush;
+    }
+}
+
+float Renderer::PropScale(int tile) const
+{
+    switch (tile)
+    {
+    case TILE_TREE:    return 1.45f;   // taller than the houses
+    case TILE_FLOWERS: return 0.18f;
+    case TILE_LAMP:    return 1.15f;
+    default:           return 0.42f;   // bush
     }
 }

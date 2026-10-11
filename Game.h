@@ -1,6 +1,8 @@
 #pragma once
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "World.h"
+#include "Item.h"
 
 // =====================================================
 // The core of the game: states, input, the Screen
@@ -12,9 +14,29 @@
 enum class GameState
 {
     MainMenu,
+    DeliverySelect,
+    Shop,
     Run,
     GameOver,
     Quit      // not a screen: tells the loop to exit
+};
+
+
+// Everything the screens share: money, the delivery picked on the
+// select screen, and the random generator.
+struct GameData
+{
+    int      money = 0;
+    Contract chosen = {};   // set by the select screen, read by the run
+    Random   rng;
+
+    // The one item you carry (bought in the shop, used during a delivery).
+    // It stays until you use it, even if a delivery fails.
+    ItemType heldItem = ItemType::None;
+
+    // True when the select screen should roll a new list. Set after a
+    // delivery; visiting the shop or the menu keeps the same list.
+    bool     newContracts = true;
 };
 
 
@@ -128,6 +150,7 @@ private:
     HWND      m_hwnd;
     Input     m_input;
     GameState m_state;
+    GameData  m_data;
 
     // Back buffer: a DIB section the screens draw into, then
     // stretched to the window in one go (no flicker).
@@ -138,6 +161,8 @@ private:
 
     // Screens (created in Init)
     Screen* m_mainMenu;
+    Screen* m_deliverySelect;
+    Screen* m_shop;
     Screen* m_run;
     Screen* m_gameOver;
 };
